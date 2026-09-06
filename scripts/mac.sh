@@ -78,41 +78,11 @@ shot)
   ;;
 
 where)
-  needle="${1:?need the text to look for}"
-  osascript <<AS
-tell application "System Events"
-  tell (first process whose frontmost is true)
-    set hits to {}
-    try
-      repeat with el in (entire contents of front window)
-        set lab to ""
-        try
-          set lab to (name of el as text)
-        end try
-        if lab is "" then
-          try
-            set lab to (description of el as text)
-          end try
-        end if
-        if lab contains "$needle" then
-          try
-            set {x, y} to position of el
-            set {w, h} to size of el
-            set end of hits to (lab & "  ->  " & (x + w div 2) & " " & (y + h div 2))
-          end try
-        end if
-      end repeat
-    end try
-    if hits is {} then return "no element matching: $needle"
-    return hits
-  end tell
-end tell
-AS
+  osascript -l JavaScript "$(dirname "$0")/tree.js" "${1:?need the text to look for}"
   ;;
 
 ui)
-  se 'to tell (first process whose frontmost is true) to return name of every UI element of front window' \
-    | tr ',' '\n' | sed 's/^ *//' | grep -v '^$' | head -100
+  osascript -l JavaScript "$(dirname "$0")/tree.js"
   ;;
 
 apps)

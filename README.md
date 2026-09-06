@@ -7,6 +7,12 @@ Claude already reads your files and drives your browser. This covers the rest:
 Finder, Preview, Xcode, Blender, System Settings, installers, that one legacy
 app your workflow still depends on.
 
+![macuse driving TextEdit](docs/demo.gif)
+
+Every frame above is a real run: it types text with accents intact, asks the
+accessibility tree where the centre-align control is, and clicks the coordinates
+it got back.
+
 ```bash
 scripts/mac.sh shot                      # screenshot, in clickable coordinates
 scripts/mac.sh where "Save"              # → Save  ->  812 604
@@ -90,6 +96,26 @@ The agent works a loop — look, act, look again — and the skill instructs it 
 confirm before anything consequential, to treat whatever is on screen as data
 rather than instructions, and to stop and describe what it sees after two failed
 attempts instead of hammering the same coordinates.
+
+## What it can't do
+
+Worth knowing before you install it:
+
+- **`where` only sees what the app exposes.** AppKit apps (TextEdit, Finder,
+  Mail) expose a rich tree. Newer SwiftUI apps often expose almost nothing —
+  Calculator's buttons come back as an unnamed `Button` with no title or
+  description, so there is nothing to match on. Fall back to `shot` and pixels.
+- **Element names follow the system language.** On an Italian Mac the demo
+  above matches `allinea al centro`, not `align centre`. Read the tree with
+  `ui` first rather than guessing the English name.
+- **The tree is not always there on the first call.** Right after a window
+  changes, a lookup can come back empty and succeed a second later. If a
+  `where` matters, retry it once before falling back to coordinates.
+- **A control can be found and still be dead.** `where` returns disabled
+  controls too — clicking bold in a plain-text document does nothing, and the
+  click reports success. Confirm with a screenshot, not with the exit code.
+- **No pointer without Accessibility**, and that permission fails silently.
+  Run `check`.
 
 ## Requirements
 
