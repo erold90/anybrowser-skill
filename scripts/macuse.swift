@@ -523,24 +523,42 @@ func acting(_ body: () throws -> String) throws -> String {
 
 func pointer() -> CGPoint { CGEvent(source: nil)?.location ?? .zero }
 
+/// Set once anything is posted: events still in flight when the process exits are
+/// dropped by the window server — a lone "move" to a point never arrived.
+var postedEvents = false
+
 func post(_ type: CGEventType, _ p: CGPoint, _ button: CGMouseButton = .left, clicks: Int64 = 0) {
     guard let e = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: p, mouseButton: button) else { return }
     if clicks > 0 { e.setIntegerValueField(.mouseEventClickState, value: clicks) }
     e.post(tap: .cghidEventTap)
+    postedEvents = true
 }
 
-/// Move there — instantly, or gliding along an eased path when MACUSE_GLIDE (ms) is set.
-func glide(to target: CGPoint, ms: Int = env("MACUSE_GLIDE", 0), dragging: Bool = false) {
+/// How long a move takes. By default it scales with distance — 25 ms for a short
+/// hop, ~110 ms across the screen — so the pointer travels like a hand rather than
+/// jumping, at little cost. MACUSE_GLIDE=0 teleports, MACUSE_GLIDE=<ms> fixes it.
+func glideDuration(_ distance: Double) -> Double {
+    if let raw = ProcessInfo.processInfo.environment["MACUSE_GLIDE"], let ms = Double(raw), ms >= 0 { return distance > 2 ? ms : 0 }
+    return distance > 2 ? min(110, 25 + distance * 0.07) : 0
+}
+
+/// Move there along an eased path at ~240 events per second, on an absolute
+/// schedule so sleep jitter doesn't stretch the move.
+func glide(to target: CGPoint, ms: Double? = nil, dragging: Bool = false) {
     let type: CGEventType = dragging ? .leftMouseDragged : .mouseMoved
     let from = pointer()
     let distance = hypot(target.x - from.x, target.y - from.y)
-    if ms > 0 && distance > 2 {
-        let steps = max(2, ms / 8)
-        for i in 1...steps {
+    let duration = ms ?? glideDuration(distance)
+    if duration > 0 {
+        let steps = max(2, Int(duration / 4.2))
+        let start = now()
+        for i in 1..<steps {
             let t = Double(i) / Double(steps)
             let e = t * t * (3 - 2 * t)                     // smoothstep: eases in and out
             post(type, CGPoint(x: from.x + (target.x - from.x) * e, y: from.y + (target.y - from.y) * e))
-            pause(Double(ms) / Double(steps))
+            let due = start + duration / 1000 * t
+            let wait = (due - now()) * 1000
+            if wait > 0 { pause(wait) }
         }
     }
     post(type, target)
@@ -569,7 +587,7 @@ func drag(_ a: CGPoint, _ b: CGPoint) {
     pause(20)
     post(.leftMouseDown, a)
     pause(40)
-    glide(to: b, ms: max(env("MACUSE_GLIDE", 0), 160), dragging: true)
+    glide(to: b, ms: max(glideDuration(hypot(b.x - a.x, b.y - a.y)), 160), dragging: true)
     pause(40)
     post(.leftMouseUp, b)
 }
@@ -618,6 +636,7 @@ func tap(_ code: CGKeyCode, flags: CGEventFlags = []) {
         e.post(tap: .cghidEventTap)
         pause(4)
     }
+    postedEvents = true
 }
 
 func modifiers(_ spec: String) throws -> CGEventFlags {
@@ -665,6 +684,7 @@ func typeKeys(_ text: String) {
             guard let e = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { continue }
             units.withUnsafeBufferPointer { e.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress) }
             e.post(tap: .cghidEventTap)
+            postedEvents = true
         }
         pause(6)
     }
@@ -980,6 +1000,7 @@ ACT  (each one waits for the app to react and reports what changed)
   key <name> · hotkey "cmd shift" s
   menu <app> <menu> [<submenu>...] <item>
   focus <app> · open <url> [app] · upload <file>
+  hover X Y | <name>       rest the pointer there: hover menus, tooltips
   move X Y · drag X1 Y1 X2 Y2 · scroll N [dx]
 
   do "<cmd>" "<cmd>" ...   run a sequence in one call; stops at the first failure
@@ -988,7 +1009,8 @@ ACT  (each one waits for the app to react and reports what changed)
   check                    report which permissions are missing
 
 Environment: MACUSE_SETTLE=ms (reaction wait, 0 = fire and forget),
-             MACUSE_GLIDE=ms (animate the pointer), MACUSE_SHOTS=dir
+             MACUSE_GLIDE=ms (pointer travel; default scales with distance, 0 = jump),
+             MACUSE_WAIT=s (lookup wait), MACUSE_DEBUG=1, MACUSE_SHOTS=dir
 """
 
 func point(_ args: [String], _ i: Int) throws -> CGPoint {
@@ -1194,6 +1216,17 @@ func execute(_ args: [String]) throws -> String {
         guard FileManager.default.fileExists(atPath: abs) else { throw Fail(message: "no such file: \(file)") }
         return try acting { try upload((abs as NSString).standardizingPath) }
 
+    case "hover":
+        try requireTrust("hover")
+        if a.count == 2, Double(a[0]) != nil {
+            let p = try point(a, 0)
+            return try acting { glide(to: p); return "hovering at \(Int(p.x)) \(Int(p.y))" }
+        }
+        guard let needle = a.first else { throw Fail(message: "hover needs X Y or a name", code: 2) }
+        let target = try pick(needle)
+        guard target.reachable else { throw Fail(message: "\(label(target)) is covered or off screen — nothing to hover") }
+        return try acting { glide(to: target.point!); return "hovering over \(label(target))" }
+
     case "move":
         try requireTrust("move")
         let p = try point(a, 0)
@@ -1210,6 +1243,7 @@ func execute(_ args: [String]) throws -> String {
         let dy = Int32(try number(a.first, "lines")), dx = Int32(a.count > 1 ? try number(a[1], "dx") : 0)
         return try acting {
             CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0)?.post(tap: .cghidEventTap)
+            postedEvents = true
             return ""
         }
 
@@ -1289,14 +1323,19 @@ func tokenize(_ s: String) throws -> [String] {
 
 // MARK: - Main
 
+func finish(_ code: Int32) -> Never {
+    if postedEvents { pause(25) }                     // let the window server take delivery
+    exit(code)
+}
+
 do {
     let result = try execute(Array(CommandLine.arguments.dropFirst()))
     if !result.isEmpty { say(result) }
-    exit(0)
+    finish(0)
 } catch let f as Fail {
     warn(f.message)
-    exit(f.code)
+    finish(f.code)
 } catch {
     warn("\(error)")
-    exit(1)
+    finish(1)
 }

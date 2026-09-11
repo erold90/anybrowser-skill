@@ -105,9 +105,9 @@ LOOK   shot [name] · where <text> · waitfor|waitgone <text> [secs] · read|ui 
 ACT    click|dclick|rclick X Y|<name> · press <name> · fill <field> "text" · select <menu> <option>
        type "text" · keys "text" · key <name> · hotkey "<mods>" <key>
        menu <app> <menu> [<submenu>...] <item> · focus <app> · open <url> [app] · upload <file>
-       move X Y · drag X1 Y1 X2 Y2 · scroll N [dx]
+       hover X Y|<name> · move X Y · drag X1 Y1 X2 Y2 · scroll N [dx]
 CHAIN  do "<cmd>" "<cmd>" ...  ·  do -   (steps from stdin)
 ```
 
-Environment: `MACUSE_SETTLE=0` skips the reaction wait and report; `MACUSE_GLIDE=120`
-animates the pointer; `MACUSE_WAIT` is the lookup wait in seconds.
+Environment: `MACUSE_SETTLE=0` skips the reaction wait and report; `MACUSE_GLIDE=0`
+makes the pointer jump instead of travel; `MACUSE_WAIT` is the lookup wait in seconds.

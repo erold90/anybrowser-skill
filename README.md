@@ -43,9 +43,9 @@ Safari, 10.5 s in a Chrome launched cold.
 **Native, and fast.** One Swift file, compiled on your Mac at install. It talks
 to the Accessibility API and posts CoreGraphics events in-process — no
 AppleScript, no helper apps, no daemon. On a 2018 Intel MacBook Pro, a click by
-name reaches the web page's `mousedown` handler 210–260 ms after the command
-starts, lookup included; reading a window's element tree dropped from ~1 s
-(JavaScript for Automation) to ~0.3 s.
+name reaches the web page's `mousedown` handler 150–190 ms after the command
+starts, lookup and pointer travel included; reading a window's element tree
+dropped from ~1 s (JavaScript for Automation) to ~0.1 s.
 
 **Real input.** Clicks and keystrokes are OS events, so pages see `isTrusted`
 events: on the test page every click and keystroke counts as real, none as
@@ -98,13 +98,17 @@ everything, Screen Recording for `shot` — then restart your terminal.
 | `key <name>` · `hotkey "cmd shift" s` | Named keys · shortcuts on the current layout |
 | `menu <app> <menu> [<submenu>…] <item>` | A menu item by name, at any depth |
 | `focus <app>` · `open <url> [app]` · `upload <file>` | Front an app by its localized name, bundle name or id · a web page · answer the Open dialog |
+| `hover X Y` or `<name>` | Rest the pointer on something: hover menus, tooltips |
 | `move X Y` · `drag X1 Y1 X2 Y2` · `scroll N [dx]` | The pointer |
 | `do "<cmd>" "<cmd>" …` · `do -` | A sequence in one call, stopping at the first failure · the same from stdin |
 | `check` | Which permissions are missing |
 
-`MACUSE_SETTLE=0` skips the wait and report (fire and forget),
-`MACUSE_GLIDE=120` animates the pointer along an eased path, `MACUSE_WAIT`
-sets how long a lookup by name waits (seconds, default 2).
+The pointer travels instead of jumping: an eased path at ~240 events a second,
+25 ms for a short hop up to ~110 ms across the screen — a click by name still
+reaches the page in under 200 ms. `MACUSE_GLIDE=0` jumps, `MACUSE_GLIDE=<ms>`
+fixes the travel time. `MACUSE_SETTLE=0` skips the wait and report (fire and
+forget), `MACUSE_WAIT` sets how long a lookup by name waits (seconds, default 2),
+`MACUSE_DEBUG=1` prints where a slow step spends its time.
 
 ## On the web
 

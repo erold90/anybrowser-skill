@@ -41,6 +41,11 @@ t "unknown key name fails"              says "unknown key" "$M" key nope
 t "unknown modifier fails"              says "unknown modifier" "$M" hotkey "cmd banana" s
 t "hotkey without a key fails"          refuses "$M" hotkey cmd
 t "pos prints two numbers"              bash -c "\"$M\" pos | grep -Eq '^-?[0-9]+ -?[0-9]+$'"
+# A lone pointer event used to be dropped when the process exited right after it.
+read -r X Y <<<"$("$M" pos)"
+t "move lands, jumping"                 bash -c "MACUSE_GLIDE=0 \"$M\" move $((X+9)) $((Y+7)) && [ \"\$(\"$M\" pos)\" = '$((X+9)) $((Y+7))' ]"
+t "move lands, gliding"                 bash -c "\"$M\" move $((X+40)) $((Y+30)) && [ \"\$(\"$M\" pos)\" = '$((X+40)) $((Y+30))' ]"
+MACUSE_GLIDE=0 "$M" move "$X" "$Y" >/dev/null 2>&1
 t "fill needs a field and a text"       refuses "$M" fill Email
 t "open refuses non-web URLs"           says "http(s) URLs only" "$M" open "file:///etc/hosts"
 t "shot refuses a path as its name"     refuses "$M" shot ../../x
