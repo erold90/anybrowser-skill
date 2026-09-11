@@ -23,10 +23,18 @@ moving the pointer one point and reading it back. Don't guess — run it.
 
 ## Work in a loop, and look between steps
 
-1. `shot` — take a screenshot and actually read it
+1. look — `where`, `read` or `ui` first; `shot` when those can't tell
 2. decide the single next action
 3. do it
-4. `shot` again to confirm it landed
+4. confirm it landed — `waitfor` the element that should now exist, or `read`
+   the text that should have changed
+
+Confirmation has to come from the screen, not from the command: an exit code
+of 0 means the event was sent, not that anything happened. But it rarely needs
+a screenshot. The accessibility tree answers in a fraction of a second and a
+few dozen tokens; a screenshot costs about a second and ~1,700. Take one when
+the tree is silent (canvases, games, apps that expose nothing) or when a
+lookup returns something you didn't expect.
 
 Never fire a sequence of clicks blind. The screen moves under you: a dialog
 opens, a window takes focus, a list reorders. One action, one look.
