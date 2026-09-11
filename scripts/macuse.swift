@@ -246,22 +246,33 @@ func frontTree(stop: ((Node) -> Bool)? = nil, visibleOnly: Bool = false) throws 
         clip = CGRect(origin: o, size: sz).intersection(CGDisplayBounds(CGMainDisplayID()))
     }
     var result = walk(win, stop: stop, clip: clip)
-    let bundle = NSRunningApplication(processIdentifier: app.pid)?.bundleIdentifier ?? ""
-    if !result.sawWeb, chromium.contains(where: { bundle.hasPrefix($0) }) {
-        // Chrome builds the page's tree only once an assistive app asks, with the
-        // attribute VoiceOver sets. It replies with an error and does it anyway,
-        // ~2 s later; asking again before then restarts the wait. A marker per
-        // browser process keeps pageless windows from paying this on every call.
-        let marker = NSTemporaryDirectory() + "macuse-chromium-\(app.pid)"
+    let running = NSRunningApplication(processIdentifier: app.pid)
+    let bundle = running?.bundleIdentifier ?? ""
+    let frameworks = running?.bundleURL?.appendingPathComponent("Contents/Frameworks").path ?? ""
+    let electron = FileManager.default.fileExists(atPath: frameworks + "/Electron Framework.framework")
+        || FileManager.default.fileExists(atPath: frameworks + "/Chromium Embedded Framework.framework")
+    let browser = chromium.contains(where: { bundle.hasPrefix($0) })
+    // A lookup that already found its exact match doesn't need the page woken.
+    let matched = stop.map { found in result.nodes.last.map(found) ?? false } ?? false
+    if !result.sawWeb, !matched, browser || electron {
+        // Chromium builds a page's tree only when an assistive app asks: browsers
+        // listen for the attribute VoiceOver sets, Electron apps for
+        // AXManualAccessibility. Chrome answers the first with an error and obeys
+        // anyway, ~2 s later; asking again before then restarts the wait, and a
+        // marker per process keeps windows with no page from paying it each call.
+        let marker = NSTemporaryDirectory() + "macuse-web-\(app.pid)"
         let age = (try? FileManager.default.attributesOfItem(atPath: marker)[.modificationDate] as? Date)
             .flatMap { $0 }.map { -$0.timeIntervalSinceNow } ?? .infinity
         if age > 120 {
             AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+            if electron { AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) }
             FileManager.default.createFile(atPath: marker, contents: nil)
-            let deadline = now() + 5
-            while !result.sawWeb && now() < deadline {
+            // Wait for a page with something in it, not just an empty web area.
+            let deadline = now() + 6
+            while now() < deadline {
                 pause(250)
                 result = walk(win, stop: stop, clip: clip)
+                if result.sawWeb && result.nodes.filter({ $0.inWeb }).count >= 3 { break }
             }
         }
     }

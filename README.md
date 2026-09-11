@@ -60,8 +60,11 @@ you can keep using your mouse.
 - Retina: `shot` scales to points, so a pixel read off the image is where `click` lands.
 - Permissions: without Accessibility, posted events vanish silently. `check`
   moves the pointer one point and reads it back.
-- Chrome builds its page tree only when an assistive app asks; macuse asks the
-  way VoiceOver does, once, and waits for it.
+- Chromium builds a page's tree only when an assistive app asks. macuse asks —
+  the way VoiceOver does for Chrome, Brave, Edge, Arc; with `AXManualAccessibility`
+  for Electron and CEF apps (VS Code, Slack, Notion, Claude…) — and waits until
+  the page has content. Tested cold on Chrome and on the Claude desktop app
+  (Electron: 13 elements before, 341 after).
 - The system Open panel: `upload` checks it's really in front (identifier
   `open-panel`, the same in every language) before typing a path, waits for the
   Open button to enable, and confirms the dialog closed.
@@ -130,9 +133,9 @@ ignore scripted values, browsers other than Chrome.
 
 - **It sees what apps expose.** AppKit apps (TextEdit, Finder, Mail) expose a
   rich tree; many SwiftUI apps expose unnamed buttons; apps that draw their own
-  UI (games, canvases) expose nothing. There: `shot` and coordinates. Some
-  Chromium-based desktop apps expose no page at all — in our test, the ChatGPT
-  app showed its window frame and nothing inside.
+  UI (games, canvases) expose nothing. There: `shot` and coordinates. Chromium
+  apps built on neither Electron nor CEF may expose no page at all — in our
+  test, the ChatGPT desktop app showed its window frame and nothing inside.
 - **Names follow the system language.** On an Italian Mac it's
   `menu TextEdit Formato Font "Mostra font"`. Read `menus` or `ui` first.
 - **Not every change has a name.** In our tests neither Safari nor Chrome
@@ -145,8 +148,8 @@ ignore scripted values, browsers other than Chrome.
 ## Requirements
 
 macOS with the Swift compiler (Command Line Tools). Tested on macOS Sequoia 15.7,
-Intel, with an Italian system: Safari, Chrome, TextEdit, Finder, System Settings
-and Calculator. The GIF above predates the native engine.
+Intel, with an Italian system: Safari, Chrome, TextEdit, Finder, System Settings,
+Calculator and the Claude desktop app. The GIF above predates the native engine.
 
 ## Licence
 

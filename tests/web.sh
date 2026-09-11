@@ -36,7 +36,7 @@ flow() {
   local browser="$1" out start page
   start=$(ms)
   out=$("$M" do \
-    'waitfor "macuse test page" 15' \
+    "${FIRST_STEP:-waitfor \"macuse test page\" 15}" \
     'fill Name "Ada Lovelace"' \
     'fill Email "ada@example.com"' \
     'select Plan Pro' \
@@ -67,7 +67,7 @@ osascript -e 'tell application "Safari" to close (every window whose name is "ma
 if [ -d "/Applications/Google Chrome.app" ]; then
   open -na "Google Chrome" --args --user-data-dir="$TMP/chrome" --no-first-run --no-default-browser-check --new-window "$URL"
   sleep 4
-  flow Chrome
+  FIRST_STEP='click Target' flow Chrome     # a click as the very first command must wake the page too
 fi
 
 echo "pass=$pass fail=$fail"

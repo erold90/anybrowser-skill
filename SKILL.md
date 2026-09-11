@@ -80,7 +80,8 @@ page's text and not the toolbar. `fill`, `click` and `keys` send real input
 events, so pages that ignore scripted values see a person. For the system file
 picker: `click` the page's upload control, then `upload ~/file.png` — it checks
 the dialog is really open first. The first read of a freshly launched Chrome
-takes ~3 s.
+takes ~3 s; so does the first read of an Electron app (VS Code, Slack, Notion,
+Claude desktop), which macuse wakes the same way.
 
 ## Typing
 
