@@ -89,10 +89,10 @@ everything, Screen Recording for `shot` — then restart your terminal.
 | | |
 |---|---|
 | `shot [name] [--window \| --region X Y W H \| --display N]` | Capture, scaled so pixels equal points; a crop says its origin — smaller images, fewer tokens |
-| `where <text>` | Elements matching `<text>`, exact name first, with centre points |
+| `where <text>` | Elements matching `<text>`, exact name first, with centre points and on/off state |
 | `waitfor` · `waitgone` `<text> [secs]` | Return as soon as an element appears · disappears |
 | `read` · `ui` `[--all]` | Visible text in order (the page, on a web page) · named elements; `--all` includes off screen |
-| `apps` · `windows` · `menus <app>` · `pos` | Running apps · every window with its frame · an app's menu bar · the pointer |
+| `apps` · `windows` · `menus <app> [<menu>…]` · `pos` | Running apps · every window with its frame · a menu bar or a menu's items · the pointer |
 | `click` · `dclick` · `rclick` `X Y` or `<name>` | Real clicks, at a point or on the best enabled match |
 | `press <name>` | Trigger a control through accessibility, pointer untouched |
 | `fill <field> "text"` | Focus a text field by name and replace its content, then read it back |

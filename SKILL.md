@@ -30,14 +30,20 @@ clicked Upload file  [StaticText] at 96 439 → window: "" (sheet, file dialog) 
 ```
 
 That report **is** your confirmation — don't take a screenshot to check a step
-that already says what changed. Read it:
+that already says what changed. The forms it takes:
 
-- `→ focus: … · value: "…"` — the field has the text
-- `→ new window: "…"` / `(sheet, file dialog)` — a dialog opened
-- `→ the app reacted (…), nothing moved in focus` — something changed that the
-  report can't name: `read` if the result matters
-- `→ no reaction seen` — the click may have missed, or the app draws its own UI:
-  now `shot`
+| Report | Means |
+|---|---|
+| `focus: Email [TextField] · value: "…"` | where the keyboard is now, and what that field holds |
+| `new window: "…"` · `window: "…" (sheet)` · `(file dialog)` | a window or dialog opened, or the front one changed |
+| `window closed — now in "…"` · `no window open` | a window went away |
+| `app: TextEdit → Safari` | another app came to the front |
+| `changed: "Sent" [StaticText]` | an element elsewhere changed its text — a status line, a label, a style menu |
+| `menu opened` | a menu or pop-up is showing |
+| `the app reacted (…), nothing moved in focus` | something changed the report can't name: `read` if it matters |
+| `no reaction seen — confirm with read (or shot)` | the click may have missed, or the app draws its own UI |
+
+Exit codes: `0` done, `1` failed or not found (the message says which), `2` bad arguments.
 
 ## Chain steps in one call
 
@@ -62,8 +68,9 @@ so no `sleep` between steps.
 | A button, link, field | `click "Save"` · `fill "Email" "…"` · `press "Save"` |
 | A pop-up menu or `<select>` | `select "Country" "Italy"` — checks the value, restores it on failure |
 | Wait for a spinner to go | `waitgone "Loading"` |
-| What's there | `where "Save"` (best first, with points) · `ui` · `read` |
-| Anything the tree can't see | `shot --window` (smaller than the whole screen), read it, `click X Y` |
+| What's there | `where "Save"` (best first, with points; checkboxes say `(on)`/`(off)`) · `ui` · `read` |
+| A menu's items | `menus TextEdit` (the bar) · `menus TextEdit Format Font` (that submenu, `▸` = has a submenu) |
+| Anything the tree can't see | `shot --window` (smaller than the whole screen), read it, `click X Y` — saved as `$TMPDIR/shot.png` unless you pass a name or an absolute `.png` path |
 | Another window | `windows` · `raise "Invoice"` |
 
 `click <name>` moves the real pointer. `press <name>` triggers the control
@@ -82,6 +89,31 @@ picker: `click` the page's upload control, then `upload ~/file.png` — it check
 the dialog is really open first. The first read of a freshly launched Chrome
 takes ~3 s; so does the first read of an Electron app (VS Code, Slack, Notion,
 Claude desktop), which macuse wakes the same way.
+
+## Closing without saving
+
+`menu <app> File Close` (or `hotkey cmd w`) shows a sheet. Its discard button
+depends on the document: **Don't Save** (`Non salvare`) for an edited file, but
+**Delete** (`Elimina`) for a new document that was never saved. When the user
+asked you to discard their document, pressing that button *is* the discard they
+asked for; otherwise ask before choosing it. The report ends
+`→ window closed — …` when it worked.
+
+## A whole task
+
+```
+$ mac.sh do 'menu TextEdit File New' 'type "Hello — città"' 'menu TextEdit Edit "Select All"' \
+            'menu TextEdit Format Font Bold' 'where bold' 'read'
+[1] menu TextEdit File New  (588 ms)
+    chose File > New → new window: "Untitled 7" · focus: [TextArea] in "Untitled 7"
+[2] type "Hello — città"  (556 ms)
+    → value: "Hello — città"
+…
+[5] where bold  (41 ms)
+    bold  [CheckBox]  ->  477 105  (on)
+[6] read  (31 ms)
+    Hello — città
+```
 
 ## Typing
 

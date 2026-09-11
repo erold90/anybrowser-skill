@@ -48,7 +48,8 @@ t "move lands, gliding"                 bash -c "\"$M\" move $((X+40)) $((Y+30))
 MACUSE_GLIDE=0 "$M" move "$X" "$Y" >/dev/null 2>&1
 t "fill needs a field and a text"       refuses "$M" fill Email
 t "open refuses non-web URLs"           says "http(s) URLs only" "$M" open "file:///etc/hosts"
-t "shot refuses a path as its name"     refuses "$M" shot ../../x
+t "shot refuses a relative path"        refuses "$M" shot ../../x
+t "shot refuses a non-png absolute path" says "absolute and end in .png" "$M" shot /tmp/x.jpg
 t "upload refuses a missing file"       says "no such file" "$M" upload "$TMP/nope.txt"
 touch "$TMP/real.txt"
 t "upload types nothing without a dialog" says "no file dialog in front" "$M" upload "$TMP/real.txt"
@@ -58,6 +59,7 @@ t "do runs every step when all pass"    says "\[2\] pos" "$M" do "pos" "pos"
 t "do - reads steps from stdin"         bash -c "printf '# comment\npos\n\npos\n' | \"$M\" do - | grep -q '\[2\] pos'"
 t "select needs a menu and an option"   says "select needs a menu and an option" "$M" select Plan
 t "waitgone returns when absent"        says "gone:" "$M" waitgone "zz-no-such-element-zz" 1
+t "menus lists a menu's items"          bash -c "\"$M\" menus Finder \"\$(\"$M\" menus Finder | sed -n 3p)\" | grep -q ."
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

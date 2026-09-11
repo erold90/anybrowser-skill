@@ -145,7 +145,10 @@ struct Node {
     let disabled: Bool
     let inWeb: Bool
     var reachable = true          // a click at `point` lands on this element
+    var on: Bool? = nil           // checkboxes, radio buttons, switches: ticked or not
 }
+
+let toggleRoles: Set<String> = ["CheckBox", "RadioButton", "Switch", "ToggleButton"]
 
 /// Would a click at `p` land on `target`? Ask the system what is at that point —
 /// across all apps, so a covering window, banner or dialog counts — and accept the
@@ -174,7 +177,7 @@ func reaches(_ p: CGPoint, _ target: AXUIElement) -> Bool {
 }
 
 let inputRoles: Set<String> = ["TextField", "TextArea", "ComboBox", "SearchField", "SecureTextField"]
-let textRoles: Set<String> = ["StaticText", "Heading", "Link", "Button", "Cell", "MenuItem"]
+let textRoles: Set<String> = ["StaticText", "Heading", "Link", "Button", "Cell", "MenuItem", "TextArea"]
 let chromium = ["com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac",
                 "company.thebrowser.Browser", "com.vivaldi.Vivaldi", "com.operasoftware.Opera"]
 
@@ -221,7 +224,8 @@ func walk(_ root: AXUIElement, maxDepth: Int = 40, maxNodes: Int = 8000,
                 point = CGPoint(x: (p.x + s.width / 2).rounded(), y: (p.y + s.height / 2).rounded())
             }
             let enabled = value(values, 7) as? Bool
-            let node = Node(el: el, name: name, role: role, point: point, disabled: enabled == false, inWeb: inWeb)
+            var node = Node(el: el, name: name, role: role, point: point, disabled: enabled == false, inWeb: inWeb)
+            if toggleRoles.contains(role), let state = value(values, 3) as? NSNumber { node.on = state.intValue != 0 }
             nodes.append(node)
             if let stop = stop, stop(node) { done = true; return }
         }
@@ -300,6 +304,7 @@ func line(_ n: Node) -> String {
         s += "  ->  \(Int(p.x)) \(Int(p.y))"
         if !onScreen(p) { s += "  (offscreen)" }
     }
+    if let on = n.on { s += on ? "  (on)" : "  (off)" }
     if n.disabled { s += "  (disabled)" }
     return s
 }
@@ -332,7 +337,7 @@ func pick(_ needle: String, fields: Bool = false, roles: Set<String>? = nil, nee
         if let pos = axPoint(best.el.attr(kAXPositionAttribute)), let size = axSize(best.el.attr(kAXSizeAttribute)) {
             best = Node(el: best.el, name: best.name, role: best.role,
                         point: CGPoint(x: (pos.x + size.width / 2).rounded(), y: (pos.y + size.height / 2).rounded()),
-                        disabled: best.disabled, inWeb: best.inWeb)
+                        disabled: best.disabled, inWeb: best.inWeb, on: best.on)
         }
         best.reachable = reaches(best.point!, best.el)
     }
@@ -453,13 +458,17 @@ struct Snap {
 
     func changes(since b: Snap, watch: Watch) -> String {
         var parts: [String] = []
-        if pid != b.pid { parts.append("app: \(b.app) → \(app)") }
-        if window != b.window || windowKind != b.windowKind || (pid != b.pid && !window.isEmpty) {
-            let kind = windowKind.isEmpty ? "" : " (\(windowKind))"
-            if pid == b.pid && windows > b.windows { parts.append("new window: \"\(window)\"\(kind)") }
-            else { parts.append("window: \"\(window)\"\(kind)") }
-        } else if pid == b.pid && windows != b.windows {
-            parts.append(windows > b.windows ? "a window opened" : "a window closed")
+        let title = window.isEmpty ? "(untitled)" : "\"\(window)\""
+        let kind = windowKind.isEmpty ? "" : " (\(windowKind))"
+        if pid != b.pid {
+            parts.append("app: \(b.app) → \(app)")
+            parts.append(windows == 0 ? "no window open" : "window: \(title)\(kind)")
+        } else if windows > b.windows {
+            parts.append("new window: \(title)\(kind)")
+        } else if windows < b.windows {
+            parts.append(windows == 0 ? "window closed — no window open" : "window closed — now in \(title)\(kind)")
+        } else if window != b.window || windowKind != b.windowKind {
+            parts.append("window: \(title)\(kind)")
         }
         if focus != b.focus && !focus.isEmpty { parts.append("focus: \(focus)") }
         if value != b.value && !value.isEmpty { parts.append("value: \"\(value)\"") }
@@ -468,11 +477,15 @@ struct Snap {
         var seen = Set<String>([value])
         // Only text a person reads as a result; not toolbars updating their font menus,
         // and only in the app still in front — the one we left keeps retitling its tabs.
-        for el in watch.changed where pid == b.pid && ["StaticText", "Heading", "Cell", "Link", "Button"].contains(el.role) {
+        for el in watch.changed where pid == b.pid {
+            AXUIElementSetMessagingTimeout(el, 0.3)        // a busy app must not stall the report
+            guard ["StaticText", "Heading", "Cell", "Link", "Button"].contains(el.role) else { continue }
             var t = el.text(kAXValueAttribute)
             if t.isEmpty { t = el.text(kAXTitleAttribute) }
             t = String(flat(t).prefix(80))
-            if !t.isEmpty && seen.insert(t).inserted && parts.count < 6 { parts.append("text: \"\(t)\"") }
+            if !t.isEmpty && t != window && t != b.window && seen.insert(t).inserted && parts.count < 6 {
+                parts.append("changed: \"\(t)\" [\(el.role)]")
+            }
         }
         if parts.isEmpty {
             return watch.events > 0 ? "→ the app reacted (\(watch.events) accessibility events), nothing moved in focus"
@@ -504,15 +517,15 @@ func acting(_ body: () throws -> String) throws -> String {
     // Something new is on screen: let it finish appearing, or the next click can
     // land while a dialog is still animating in and be silently ignored. Waiting
     // is safe; clicking again would not be.
-    let windowMoved = after.pid != before.pid || after.window != before.window || after.windows != before.windows
-    // Browsers hold back input on a dialog that just *appeared*; returning to a
-    // window that was already there needs no wait.
-    let appeared = after.windows > before.windows || (after.pid == before.pid && after.window != before.window && !after.windowKind.isEmpty)
+    // Browsers hold back input on a dialog that just *appeared*. Returning to a
+    // window that was already there, or a page retitling itself after a
+    // navigation, needs no wait.
+    let appeared = after.windows > before.windows
+        || (after.window != before.window && !after.windowKind.isEmpty)
         || (after.pid != before.pid && !after.windowKind.isEmpty)
-    if appeared || (after.window != before.window && after.windows == before.windows && after.pid == before.pid && before.windowKind.isEmpty) {
-        windowChangedAt = now()
-    }
-    if windowMoved || (after.focus != before.focus && (after.focus.hasPrefix("[Group]") || after.windowKind.contains("sheet"))) {
+    if appeared { windowChangedAt = now() }
+    if appeared || after.pid != before.pid || after.windows != before.windows
+        || (after.focus != before.focus && after.focus.hasPrefix("[Group]")) {
         pause(200)
         after = Snap.take()
     }
@@ -765,7 +778,7 @@ func activate(_ name: String) throws {
     // Activation arrives as a notification: spin the run loop so it's seen.
     let deadline = now() + 8
     while now() < deadline {
-        CFRunLoopRunInMode(.defaultMode, 0.05, false)
+        if CFRunLoopRunInMode(.defaultMode, 0.05, false) == .finished { pause(50) }
         if let front = NSWorkspace.shared.frontmostApplication, matches(front, name) { return }
     }
     throw Fail(message: "\(name) did not come to the front")
@@ -783,9 +796,17 @@ func clickMenu(_ appNameArg: String, _ path: [String]) throws -> String {
     try activate(appNameArg)
     guard let app = focusedApp(), let bar = app.element(kAXMenuBarAttribute) else { throw Fail(message: "\(appNameArg) has no menu bar") }
     var container = bar
+    // "Save As…" typed as "Save As..." or "save as" is the same item; an exact
+    // title still wins over a prefix.
+    func norm(_ s: String) -> String {
+        s.lowercased().replacingOccurrences(of: "…", with: "").replacingOccurrences(of: "...", with: "")
+            .trimmingCharacters(in: .whitespaces)
+    }
     for (i, title) in path.enumerated() {
         let items = i == 0 ? bar.children : menuItems(container)
-        guard let item = items.first(where: { $0.text(kAXTitleAttribute).lowercased() == title.lowercased() }) else {
+        let want = norm(title)
+        guard let item = items.first(where: { norm($0.text(kAXTitleAttribute)) == want })
+                ?? items.first(where: { !want.isEmpty && norm($0.text(kAXTitleAttribute)).hasPrefix(want) }) else {
             let names = items.map { $0.text(kAXTitleAttribute) }.filter { !$0.isEmpty }
             throw Fail(message: "no menu item \"\(title)\" — there is: \(names.joined(separator: ", "))")
         }
@@ -963,10 +984,18 @@ func choose(_ popup: Node, _ option: String) throws -> String {
 /// pixel's coordinates to get the point to click.
 func shot(_ name: String, region: CGRect? = nil, display: Int? = nil) throws -> String {
     try requireUnlocked()
-    guard !name.contains("/"), !name.hasPrefix(".") else { throw Fail(message: "shot name must be a plain file name", code: 2) }
-    let dir = ProcessInfo.processInfo.environment["MACUSE_SHOTS"] ?? NSTemporaryDirectory()
-    let raw = (dir as NSString).appendingPathComponent("\(name)_raw.png")
-    let out = (dir as NSString).appendingPathComponent("\(name).png")
+    // A plain name goes to MACUSE_SHOTS (default: the temp folder) as <name>.png,
+    // replacing the previous shot of that name; an absolute path ending in .png is used as given.
+    let out: String
+    if name.hasPrefix("/") {
+        guard name.lowercased().hasSuffix(".png"), !name.contains("/../") else { throw Fail(message: "a shot path must be absolute and end in .png", code: 2) }
+        out = name
+    } else {
+        guard !name.contains("/"), !name.hasPrefix(".") else { throw Fail(message: "shot takes a plain name or an absolute .png path", code: 2) }
+        let dir = ProcessInfo.processInfo.environment["MACUSE_SHOTS"] ?? NSTemporaryDirectory()
+        out = (dir as NSString).appendingPathComponent("\(name).png")
+    }
+    let raw = out + ".raw.png"
 
     var ids = [CGDirectDisplayID](repeating: 0, count: 16)
     var count: UInt32 = 0
@@ -1074,7 +1103,7 @@ func execute(_ args: [String]) throws -> String {
         return "\(Int(p.x)) \(Int(p.y))"
 
     case "shot":
-        let name = a.first(where: { !$0.hasPrefix("--") && Double($0) == nil }) ?? "shot"
+        let name = a.first(where: { !$0.hasPrefix("--") && Double($0) == nil }) ?? "shot"   // "shot" → $TMPDIR/shot.png
         if let i = a.firstIndex(of: "--region") {
             let x = try number(a[safe: i + 1], "x"), y = try number(a[safe: i + 2], "y")
             let w = try number(a[safe: i + 3], "width"), h = try number(a[safe: i + 4], "height")
@@ -1175,7 +1204,26 @@ func execute(_ args: [String]) throws -> String {
         guard let name = a.first, let app = runningApp(name) else { throw Fail(message: "no running application named: \(a.first ?? "")") }
         let ax = AXUIElementCreateApplication(app.processIdentifier)
         guard let bar = ax.element(kAXMenuBarAttribute) else { throw Fail(message: "\(name) has no menu bar") }
-        return bar.children.map { $0.text(kAXTitleAttribute) }.filter { !$0.isEmpty }.joined(separator: "\n")
+        // menus TextEdit → the menu bar; menus TextEdit Format Font → that submenu's items.
+        var container = bar
+        for (i, title) in a.dropFirst().enumerated() {
+            let items = i == 0 ? bar.children : menuItems(container)
+            guard let item = items.first(where: { $0.text(kAXTitleAttribute).lowercased() == title.lowercased() })
+                    ?? items.first(where: { $0.text(kAXTitleAttribute).lowercased().hasPrefix(title.lowercased()) }) else {
+                throw Fail(message: "no menu \"\(title)\" — there is: \(items.map { $0.text(kAXTitleAttribute) }.filter { !$0.isEmpty }.joined(separator: ", "))")
+            }
+            container = item
+        }
+        if a.count == 1 { return bar.children.map { $0.text(kAXTitleAttribute) }.filter { !$0.isEmpty }.joined(separator: "\n") }
+        return menuItems(container).compactMap { item -> String? in
+            let t = item.text(kAXTitleAttribute)
+            if t.isEmpty { return nil }                    // separators
+            var line = t
+            if item.children.contains(where: { $0.role == "Menu" }) { line += "  ▸" }
+            if (item.attr(kAXEnabledAttribute) as? Bool) == false { line += "  (disabled)" }
+            if let mark = item.attr("AXMenuItemMarkChar") as? String, !mark.isEmpty { line += "  (checked)" }
+            return line
+        }.joined(separator: "\n")
 
     case "click", "dclick", "rclick":
         try requireTrust(cmd)
@@ -1183,7 +1231,7 @@ func execute(_ args: [String]) throws -> String {
         let button: CGMouseButton = cmd == "rclick" ? .right : .left
         var coords = a
         if a.count == 1, let m = a[0].range(of: #"^-?\d+(\.\d+)?\s+-?\d+(\.\d+)?$"#, options: .regularExpression) {
-            coords = a[0][m].split(separator: " ").map(String.init)
+            coords = a[0][m].split(whereSeparator: { $0.isWhitespace }).map(String.init)
         }
         if coords.count == 2, Double(coords[0]) != nil {
             let p = try point(coords, 0)
@@ -1226,8 +1274,10 @@ func execute(_ args: [String]) throws -> String {
         guard let needle = a.first, !needle.isEmpty else { throw Fail(message: "waitgone needs the text that should disappear", code: 2) }
         let secs = a.count > 1 ? try number(a[1], "seconds") : 10
         let deadline = now() + secs
+        try requireUnlocked()
         while true {
-            let hits = rank(try frontTree(), needle)
+            // No window at all means it isn't there either.
+            let hits = rank((try? frontTree()) ?? [], needle)
             if hits.isEmpty { return "gone: \(needle)" }
             if now() >= deadline { throw Fail(message: "still there after \(Int(secs))s: \(label(hits[0]))") }
             Watch().settle(first: 300, quiet: 40, max: 600)
@@ -1293,7 +1343,8 @@ func execute(_ args: [String]) throws -> String {
     case "focus":
         guard let app = a.first else { throw Fail(message: "focus needs an app name", code: 2) }
         try activate(app)
-        return "focused \(app)"
+        let hasWindow = focusedApp()?.element(kAXFocusedWindowAttribute) != nil
+        return hasWindow ? "focused \(app)" : "focused \(app) — it has no window open"
 
     case "open":
         guard let url = a.first, url.hasPrefix("http://") || url.hasPrefix("https://") else {
