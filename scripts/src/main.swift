@@ -12,16 +12,16 @@ anybrowser — drive Safari, Chrome and any browser (and the rest of the Mac) wi
 BROWSER  (the browser in front, or the one named with: use <browser>)
   tabs                     every tab of every running browser, with addresses
   tab <n | text>           switch to tab n of the front window, or the tab whose title or address matches
-  tab new [address] [--window] · tab close [n | text] · private [address]
+  tab new [address] [--window] · tab close [n | text | --mine] · private [address] · tabs --mine
   go <address>             open it in the current tab and wait until it has loaded
   back · forward · reload · waitload [secs]
   url                      title and address of the page in front
-  text [--max N]           the whole page's text, in one call
-  links [text]             links with their addresses · find <kind> [text] · table [n]
+  text [--main] [--max N]  the whole page's text in one call (--main: just the article)
+  links [text] [--url] [--count]   links with their addresses · find <kind> [text] · table [n]
                            kinds: link button field checkbox radio heading table image list landmark frame control
   js "<code>"              run JavaScript in the page (needs the browser's Allow JavaScript from Apple Events)
   source [--save file]     the page's HTML (Safari)
-  history [text] [--days N] [--limit N] · bookmarks [text]    (--ui: open the browser's own window)
+  history [text] [--days N] [--limit N] [--count] · bookmarks [text] [--count]    (--ui: open the browser's own window)
   bookmark ["title"]       bookmark the page in front · readinglist [address] (Safari)
   downloads [n]            newest downloads, with where each came from
   settings [text]          open the browser's settings (Chrome: searched; Safari: that pane)
@@ -644,7 +644,7 @@ func execute(_ args: [String]) throws -> String {
         return "browser commands now mean \(browserName(b))"
 
     case "tabs":
-        return try tabsReport()
+        return try tabsReport(mineOnly: a.contains("--mine"))
 
     case "tab":
         guard let sub = a.first else {
@@ -669,9 +669,37 @@ func execute(_ args: [String]) throws -> String {
         }
         if sub == "close" {
             let browser = try targetBrowser()
+            if a.contains("--mine") {
+                // Every window anybrowser opened, in every running browser, and nothing else.
+                let mine = openedWindows()
+                var closed = 0
+                for b in (chosenBrowser != nil ? [browser] : runningBrowsers()) where family(b) != .other {
+                    let tabs = (try? tabList(b)) ?? []
+                    for w in Set(tabs.map { $0.window }) where mine.contains("\(b.bundleIdentifier ?? "")#\(w)") {
+                        for t in tabs.filter({ $0.window == w }).sorted(by: { $0.index > $1.index }) {
+                            _ = try Scripting.call(b, "close", [t.window, "\(t.index)"])
+                        }
+                        closed += 1
+                    }
+                }
+                return closed == 0 ? "no window opened by anybrowser is open" : "closed \(closed) window\(closed == 1 ? "" : "s") opened by anybrowser"
+            }
             let target: TabInfo
             if a.count > 1 {
-                target = try findTab(Array(a.dropFirst()).joined(separator: " "), [browser]).1
+                // Closing is not switching: when several tabs match equally, name one exactly.
+                let query = Array(a.dropFirst()).joined(separator: " ")
+                if Int(query) != nil {
+                    target = try findTab(query, [browser]).1
+                } else {
+                    let hits = matchingTabs(query, [browser])
+                    guard let best = hits.first else { throw Fail(message: "no tab matching: \(query) — tabs lists them") }
+                    let tied = hits.filter { $0.score == best.score }
+                    if tied.count > 1 {
+                        throw Fail(message: "\(tied.count) tabs match \"\(query)\" — use more of the title or address, or the number in the front window:\n"
+                            + tied.prefix(6).map { "  window \($0.tab.windowIndex), tab \($0.tab.index): \(String(flat($0.tab.title).prefix(60))) — \(String($0.tab.url.prefix(80)))" }.joined(separator: "\n"))
+                    }
+                    target = best.tab
+                }
             } else {
                 guard let t = try tabList(browser).first(where: { $0.windowIndex == 1 && $0.active }) else {
                     throw Fail(message: "\(browserName(browser)) has no tab open")
@@ -685,8 +713,10 @@ func execute(_ args: [String]) throws -> String {
                 _ = try Scripting.call(browser, "close", [target.window, "\(target.index)"])
             }
             let left = ((try? tabList(browser)) ?? []).filter { $0.window == target.window }
+            let closedTab = "closed tab \(target.index) \"\(String(flat(target.title).prefix(70)))\""
+            if left.isEmpty { return closedTab + " — it was the window's last tab: the window is closed" }
             let now = left.first(where: { $0.active }).map { " — now showing \"\(String(flat($0.title).prefix(70)))\"" } ?? ""
-            return "closed tab \(target.index) \"\(String(flat(target.title).prefix(70)))\" — \(left.count) left in that window\(now)"
+            return closedTab + " — \(left.count) left in that window\(now)"
         }
         let query = a.joined(separator: " ")
         let (browser, t, _) = try findTab(query, chosenBrowser != nil ? [try targetBrowser()] : runningBrowsers())
@@ -750,9 +780,14 @@ func execute(_ args: [String]) throws -> String {
         let browser = try targetBrowser()
         let (win, web) = try browserPage(browser)
         let max = a.firstIndex(of: "--max").map { i in Int((try? number(a[safe: i + 1], "--max")) ?? 12000) } ?? 12000
-        guard var raw = pageText(web) else { throw Fail(message: "this page hands over no text — try read") }
-        // Text without line breaks in it came from Chromium: take it line by line instead.
-        if isChromiumWeb(web), let lines = pageLines(web, limit: max + 2000) {
+        var scope: AXUIElement? = nil
+        if a.contains("--main") {
+            guard let main = mainContent(web) else { throw Fail(message: "this page marks no main content — plain text reads it all") }
+            scope = main
+        }
+        guard var raw = scope.map({ elementText(web, $0) }) ?? pageText(web) else { throw Fail(message: "this page hands over no text — try read") }
+        // Chromium hands the text over without the breaks between blocks: take it line by line instead.
+        if isChromiumWeb(web), let lines = pageLines(web, limit: max + 2000, within: scope) {
             raw = lines
         }
         let text = tidyText(raw)
@@ -763,20 +798,26 @@ func execute(_ args: [String]) throws -> String {
     case "links":
         let browser = try targetBrowser()
         let (_, web) = try browserPage(browser)
-        let filter = a.joined(separator: " ").lowercased()
+        let urlOnly = a.contains("--url"), countOnly = a.contains("--count")
+        let filter = a.filter { !$0.hasPrefix("--") }.joined(separator: " ").lowercased()
         var nodes: [Node] = []
         var urls: [String] = []
         var seen = Set<String>()
+        var total = 0
         for el in webSearch(web, "AXLinkSearchKey", limit: 2000) {
             let url = axURL(el)
             let node = walk(el, maxDepth: 0, inWeb: true).nodes.first
                 ?? Node(el: el, name: "", role: "Link", point: frame(el).map { CGPoint(x: $0.midX.rounded(), y: $0.midY.rounded()) }, disabled: false, inWeb: true)
             let name = flat(node.name)
-            guard filter.isEmpty || name.lowercased().contains(filter) || url.lowercased().contains(filter) else { continue }
+            guard filter.isEmpty || (!urlOnly && name.lowercased().contains(filter)) || url.lowercased().contains(filter) else { continue }
+            total += 1
             guard seen.insert(name + "\u{0}" + url).inserted else { continue }
             nodes.append(node)
             urls.append(url)
         }
+        let summary = "\(total) link\(total == 1 ? "" : "s")" + (total != nodes.count ? " (\(nodes.count) different)" : "")
+            + (filter.isEmpty ? "" : " with \"\(filter)\" in their \(urlOnly ? "address" : "text or address")")
+        if countOnly { return summary }
         var i = 0
         let lines = numbered(nodes, limit: 150) { node in
             defer { i += 1 }
@@ -785,8 +826,8 @@ func execute(_ args: [String]) throws -> String {
             return line
         }
         guard !lines.isEmpty else { throw Fail(message: filter.isEmpty ? "no links on this page" : "no link matching: \(a.joined(separator: " "))") }
-        return lines.count > 150 ? (lines.prefix(150) + ["… \(lines.count - 150) more — narrow it: links <text>"]).joined(separator: "\n")
-                                 : lines.joined(separator: "\n")
+        return (lines.count > 150 ? (lines.prefix(150) + ["… \(lines.count - 150) more — narrow it: links <text>"]) : lines)
+            .joined(separator: "\n") + "\n" + summary
 
     case "find":
         // find <kind> [text]: the browser's own index, by kind of element.
@@ -883,9 +924,10 @@ func execute(_ args: [String]) throws -> String {
             else if a[i] == "--limit" { limit = Int(try number(a[safe: i + 1], "--limit")); i += 2 }
             else { rest.append(a[i]); i += 1 }
         }
-        let text = rest.joined(separator: " ")
-        return cmd == "history" ? try historyReport(browser, text: text, days: days, limit: limit)
-                                : try bookmarksReport(browser, text: text, limit: a.contains("--limit") ? limit : 150)
+        let countOnly = a.contains("--count")
+        let text = rest.filter { $0 != "--count" }.joined(separator: " ")
+        return cmd == "history" ? try historyReport(browser, text: text, days: days, limit: countOnly ? 1_000_000 : limit, countOnly: countOnly)
+                                : try bookmarksReport(browser, text: text, limit: a.contains("--limit") ? limit : 150, countOnly: countOnly)
 
     case "bookmark":
         // Add the page showing in front, through the browser's own Add Bookmark

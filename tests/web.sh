@@ -79,6 +79,7 @@ commands() {
     'find button Send' \
     'click @2' \
     'expect "status: sent"' \
+    'links --count' \
     'tabs' 2>&1)
   echo "      $browser: browser commands in $(( $(ms) - start )) ms"
   [ -n "${VERBOSE:-}" ] && grep -E '^\[[0-9]+\]' <<<"$out" | sed 's/^/        /'
@@ -97,7 +98,10 @@ ANYBROWSER_BROWSER=safari "$M" tab new "$URL" --window >/dev/null
 export ANYBROWSER_BROWSER=safari
 flow Safari
 commands Safari
-"$M" tab close >/dev/null 2>&1
+out=$("$M" tabs --mine 2>&1)
+t "Safari: tabs --mine shows the test window" "opened by anybrowser" "$out"
+out=$("$M" tab close --mine 2>&1)
+t "Safari: tab close --mine closes the test window" "closed 1 window opened by anybrowser" "$out"
 unset ANYBROWSER_BROWSER
 
 # --- Chromium (or Chrome), a throwaway profile starting cold ------------------------

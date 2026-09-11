@@ -32,7 +32,7 @@ func isBrowser(_ app: NSRunningApplication) -> Bool {
 }
 
 /// Set by `use <browser>` (inside a `do`) or ANYBROWSER_BROWSER.
-var chosenBrowser: String? = ProcessInfo.processInfo.environment["ANYBROWSER_BROWSER"]
+var chosenBrowser: String? = ProcessInfo.processInfo.environment["ANYBROWSER_BROWSER"].flatMap { $0.isEmpty ? nil : $0 }
 
 /// Running browsers: the app in front first, then by how high their windows sit.
 func runningBrowsers() -> [NSRunningApplication] {
@@ -357,13 +357,15 @@ func pageText(_ web: AXUIElement) -> String? {
 /// A page's text line by line, as laid out. Chromium hands the whole text over
 /// without the breaks between blocks ("NameEmail"); walking it a line at a time
 /// keeps them. Stops past `limit` characters.
-func pageLines(_ web: AXUIElement, limit: Int) -> String? {
+func pageLines(_ web: AXUIElement, limit: Int, within element: AXUIElement? = nil) -> String? {
     AXUIElementSetMessagingTimeout(web, 2)
-    guard var marker = web.attr("AXStartTextMarker") else { return nil }
     func param(_ name: String, _ arg: CFTypeRef) -> CFTypeRef? {
         var out: CFTypeRef?
         return AXUIElementCopyParameterizedAttributeValue(web, name as CFString, arg, &out) == .success ? out : nil
     }
+    guard var marker = (element ?? web).attr("AXStartTextMarker") else { return nil }
+    // Where the element's text ends, as an index into the page's text.
+    let endIndex = element.flatMap { $0.attr("AXEndTextMarker") }.flatMap { param("AXIndexForTextMarker", $0) as? NSNumber }?.intValue
     var lines: [String] = []
     var total = 0
     for _ in 0..<50_000 {
@@ -374,9 +376,30 @@ func pageLines(_ web: AXUIElement, limit: Int) -> String? {
         if total > limit { break }
         guard let end = param("AXNextLineEndTextMarkerForTextMarker", marker),
               let next = param("AXNextTextMarkerForTextMarker", end), !CFEqual(next, marker) else { break }
+        if let e = endIndex, let i = param("AXIndexForTextMarker", next) as? NSNumber, i.intValue >= e { break }
         marker = next
     }
     return lines.joined(separator: "\n")
+}
+
+/// The page's main content — its <main> landmark, else its first <article> — so
+/// reading an article skips menus, contents lists and footers.
+func mainContent(_ web: AXUIElement) -> AXUIElement? {
+    if let main = webSearch(web, "AXLandmarkSearchKey", limit: 40).first(where: { $0.text(kAXSubroleAttribute) == "AXLandmarkMain" }) {
+        return main
+    }
+    // Only a real <article>: a browser that doesn't know the search key answers with anything.
+    return webSearch(web, "AXArticleSearchKey", limit: 3).first { $0.text(kAXSubroleAttribute) == "AXDocumentArticle" }
+}
+
+/// The text of one element of the page: the text-marker range the element covers.
+func elementText(_ web: AXUIElement, _ element: AXUIElement) -> String? {
+    var range: CFTypeRef?
+    guard AXUIElementCopyParameterizedAttributeValue(web, "AXTextMarkerRangeForUIElement" as CFString, element, &range) == .success,
+          let r = range else { return nil }
+    var out: CFTypeRef?
+    guard AXUIElementCopyParameterizedAttributeValue(web, "AXStringForTextMarkerRange" as CFString, r, &out) == .success else { return nil }
+    return out as? String
 }
 
 /// Blank runs squeezed, object placeholders (images, controls) dropped.
@@ -465,7 +488,9 @@ func navigationStarted(pid: pid_t, since mark: PageMark) -> Bool {
     // Another window in front — a file dialog, an alert, a new window — isn't the page navigating.
     if let w = mark.window, !CFEqual(w, win) { return false }
     if safariLoading(win) { return true }
-    guard let web = webArea(in: win) else { return mark.web != nil }
+    // No page at all: Chromium tears the old one down while navigating; Safari
+    // simply shows one of its own views (bookmarks, history, start page) instead.
+    guard let web = webArea(in: win) else { return mark.web.map(isChromiumWeb) ?? false }
     if let m = mark.web, !CFEqual(m, web) { return true }
     if let u = mark.url, axURL(web) != u { return true }
     // A page that never finishes loading (a stream, a long poll) isn't a navigation.
@@ -610,14 +635,19 @@ func tabLine(_ t: TabInfo) -> String {
     return "\(t.index)\(t.active ? "*" : " ") \(title)\(url)"
 }
 
-func tabsReport() throws -> String {
+func tabsReport(mineOnly: Bool = false) throws -> String {
     let browsers = chosenBrowser.map { _ in [try? targetBrowser()].compactMap { $0 } } ?? runningBrowsers()
     if chosenBrowser != nil && browsers.isEmpty { _ = try targetBrowser() }        // says which isn't running
     guard !browsers.isEmpty else { throw Fail(message: "no browser is running — start one with: focus Safari") }
     var lines: [String] = []
     for b in browsers {
-        let tabs: [TabInfo]
+        var tabs: [TabInfo]
         do { tabs = try tabList(b) } catch let f as Fail { lines.append("\(browserName(b)) — \(f.message)"); continue }
+        if mineOnly {
+            let mine = openedWindows()
+            tabs = tabs.filter { mine.contains("\(b.bundleIdentifier ?? "")#\($0.window)") }
+            if tabs.isEmpty { continue }
+        }
         let windows = Set(tabs.map { $0.windowIndex }).count
         lines.append("\(browserName(b)) — \(windows) window\(windows == 1 ? "" : "s"), \(tabs.count) tab\(tabs.count == 1 ? "" : "s")")
         let opened = openedWindows()
@@ -634,7 +664,23 @@ func tabsReport() throws -> String {
             lines.append((grouped ? "    " : "  ") + tabLine(t))
         }
     }
+    if mineOnly && lines.isEmpty { return "no window opened by anybrowser is open" }
     return lines.joined(separator: "\n")
+}
+
+/// A tab by number (in the front window) or by words from its title or address.
+/// Tabs matching words from their title or address, best first (0 = the whole title).
+func matchingTabs(_ query: String, _ browsers: [NSRunningApplication]) -> [(score: Int, browser: NSRunningApplication, tab: TabInfo)] {
+    var out: [(score: Int, browser: NSRunningApplication, tab: TabInfo)] = []
+    for b in browsers {
+        guard let tabs = try? tabList(b) else { continue }
+        for t in tabs {
+            let s = [score(t.title, query), score(t.url, query).map { $0 + 4 },
+                     t.url.lowercased().contains(query.lowercased()) ? 6 : nil].compactMap { $0 }.min()
+            if let s = s { out.append((s, b, t)) }
+        }
+    }
+    return out.sorted { $0.score < $1.score }
 }
 
 /// A tab by number (in the front window) or by words from its title or address.
@@ -648,17 +694,8 @@ func findTab(_ query: String, _ browsers: [NSRunningApplication]) throws -> (NSR
         }
         return (b, t, tabs)
     }
-    var best: (Int, NSRunningApplication, TabInfo, [TabInfo])? = nil
-    for b in browsers {
-        guard let tabs = try? tabList(b) else { continue }
-        for t in tabs {
-            let s = [score(t.title, query), score(t.url, query).map { $0 + 4 },
-                     t.url.lowercased().contains(query.lowercased()) ? 6 : nil].compactMap { $0 }.min()
-            if let s = s, best == nil || s < best!.0 { best = (s, b, t, tabs) }
-        }
-    }
-    guard let found = best else { throw Fail(message: "no tab matching: \(query) — tabs lists them") }
-    return (found.1, found.2, found.3)
+    guard let found = matchingTabs(query, browsers).first else { throw Fail(message: "no tab matching: \(query) — tabs lists them") }
+    return (found.browser, found.tab, (try? tabList(found.browser)) ?? [])
 }
 
 func selectTab(_ browser: NSRunningApplication, _ t: TabInfo) throws {
@@ -863,7 +900,7 @@ func sqliteRows(_ path: String, _ sql: String, _ binds: [Any]) throws -> [[Any?]
 
 let stamp: DateFormatter = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm"; return f }()
 
-func historyReport(_ browser: NSRunningApplication, text: String, days: Double, limit: Int) throws -> String {
+func historyReport(_ browser: NSRunningApplication, text: String, days: Double, limit: Int, countOnly: Bool = false) throws -> String {
     let needle = text.lowercased()
     var rows: [(Date, String, String, Int64)] = []
     switch family(browser) {
@@ -883,7 +920,7 @@ func historyReport(_ browser: NSRunningApplication, text: String, days: Double, 
         }
     case .safari:
         let path = home + "/Library/Safari/History.db"
-        if protected(path) == true { return try safariListView(browser, bookmarks: false, text: text, limit: limit) }
+        if protected(path) == true { return try safariListView(browser, bookmarks: false, text: text, limit: limit, countOnly: countOnly) }
         // Safari counts seconds since 2001.
         let since = Date().timeIntervalSince1970 - days * 86400 - 978_307_200
         let sql = """
@@ -901,6 +938,9 @@ func historyReport(_ browser: NSRunningApplication, text: String, days: Double, 
     guard !rows.isEmpty else {
         return "nothing in \(browserName(browser))'s history" + (text.isEmpty ? "" : " matching \"\(text)\"") + " in the last \(Int(days)) days"
     }
+    if countOnly {
+        return "\(rows.count)\(rows.count >= limit ? "+" : "") page\(rows.count == 1 ? "" : "s") visited in the last \(Int(days)) days" + (text.isEmpty ? "" : " matching \"\(text)\"")
+    }
     return rows.map { r in
         let title = r.1.isEmpty ? "(untitled)" : String(flat(r.1).prefix(80))
         return "\(stamp.string(from: r.0))  \(title) — \(String(r.2.prefix(120)))" + (r.3 > 1 ? "  (\(r.3) visits)" : "")
@@ -910,7 +950,7 @@ func historyReport(_ browser: NSRunningApplication, text: String, days: Double, 
 /// Without Full Disk Access, Safari's history and bookmarks are read from its own
 /// views (⌘Y, ⌥⌘B): an outline whose rows hold a title and an address. The view is
 /// closed again if this opened it.
-func safariListView(_ browser: NSRunningApplication, bookmarks: Bool, text: String, limit: Int) throws -> String {
+func safariListView(_ browser: NSRunningApplication, bookmarks: Bool, text: String, limit: Int, countOnly: Bool = false) throws -> String {
     let key = bookmarks ? "b" : "y", mods = bookmarks ? 2 : 0
     let what = bookmarks ? "bookmarks" : "history"
     let app = AXUIElementCreateApplication(browser.processIdentifier)
@@ -987,12 +1027,14 @@ func safariListView(_ browser: NSRunningApplication, bookmarks: Bool, text: Stri
         }
         guard needle.isEmpty || (title + " " + url).lowercased().contains(needle) else { continue }
         count += 1
+        if countOnly { continue }
         if count > limit { break }
         let path = folders.map { $0.name }.joined(separator: " › ")
         if path != printed { printed = path; if !path.isEmpty { lines.append("— \(path)") } }
         lines.append("\(title.isEmpty ? "(untitled)" : String(title.prefix(80))) — \(String(url.prefix(120)))")
     }
     guard count > 0 else { return "nothing in Safari's \(what)" + (text.isEmpty ? "" : " matching \"\(text)\"") }
+    if countOnly { return "\(count) \(bookmarks ? "bookmark" : "page")\(count == 1 ? "" : "s")" + (text.isEmpty ? "" : " matching \"\(text)\"") }
     return lines.joined(separator: "\n") + "\n(read from Safari's \(what) view — with Full Disk Access it comes straight from the file\(bookmarks ? "" : ", with times")) "
 }
 
@@ -1038,9 +1080,9 @@ func bookmarks(_ browser: NSRunningApplication) throws -> [Bookmark] {
     return out
 }
 
-func bookmarksReport(_ browser: NSRunningApplication, text: String, limit: Int) throws -> String {
+func bookmarksReport(_ browser: NSRunningApplication, text: String, limit: Int, countOnly: Bool = false) throws -> String {
     if family(browser) == .safari, protected(home + "/Library/Safari/Bookmarks.plist") == true {
-        return try safariListView(browser, bookmarks: true, text: text, limit: limit)
+        return try safariListView(browser, bookmarks: true, text: text, limit: limit, countOnly: countOnly)
     }
     let all = try bookmarks(browser)
     let n = text.lowercased()
@@ -1048,6 +1090,7 @@ func bookmarksReport(_ browser: NSRunningApplication, text: String, limit: Int) 
     guard !hits.isEmpty else {
         return all.isEmpty ? "\(browserName(browser)) has no bookmarks" : "no bookmark matching \"\(text)\" among \(all.count)"
     }
+    if countOnly { return "\(hits.count) bookmark\(hits.count == 1 ? "" : "s")" + (text.isEmpty ? "" : " matching \"\(text)\"") }
     var lines = hits.prefix(limit).map { b in
         "\(b.folder.isEmpty ? "" : b.folder + " › ")\(b.title.isEmpty ? "(untitled)" : String(flat(b.title).prefix(70))) — \(String(b.url.prefix(110)))"
     }

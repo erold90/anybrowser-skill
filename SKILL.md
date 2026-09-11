@@ -20,24 +20,25 @@ binary, ~30 s). Before the first task: `scripts/anybrowser.sh check`.
 | Open a site | `go example.com` — current tab, waits for the load | 0.2–1 s |
 | New tab / window | `tab new example.com` · `tab new example.com --window` · `private example.com` | |
 | What's open | `tabs` — every tab of every browser, with addresses; `*` marks the tab showing in each window, `(opened by anybrowser)` the windows you opened | 0.3 s |
-| Switch / close | `tab 3` · `tab gmail` (title or address) · `tab close` · `tab close invoice` | 0.2 s |
+| Switch / close | `tab 3` · `tab gmail` (title or address) · `tab close` · `tab close invoice` (refuses when several tabs match equally) · `tab close --mine` (every window you opened) | 0.2 s |
 | Back, forward, reload | `back` · `forward` · `reload` — each waits for the page | 0.1–0.3 s |
-| Read a page | `text` — the whole page in one call, line by line (`--max N` characters, default 12000) | 20–100 ms |
+| Read a page | `text` — the whole page in one call, line by line; `text --main` — just the article, without menus and sidebars; `--max N` characters (default 12000) | 20–150 ms |
 | Read what's visible, with field values | `read` (`--all`: off-screen too, up to 400 lines — for long pages use `text`) | |
-| Links and where they go | `links` · `links invoice` — matches the link's text or address, any case; identical links listed once | |
+| Links and where they go | `links` · `links invoice` — matches text or address, any case (`--url`: address only); identical links listed once; the last line counts them, `--count` prints only that | |
 | Find an element | `find button Send` · `find field` · `find heading` · `where Send` | 5–150 ms |
 | A table | `find table` · `table 2` | |
 | Act | `click Send` · `fill Email "a@b.c"` · `select Plan Pro` · `click @3` | 0.2–0.6 s |
 | Wait / check | `waitfor "Order placed" 15` · `waitgone Loading` · `expect "Saved"` · `waitload` | |
-| History | `history invoice --days 7` | 50 ms (Chrome) |
-| Bookmarks | `bookmarks recipes` · add the page in front: `bookmark "Title"` | |
+| History | `history invoice --days 7` · `--count` for a number only | 50 ms (Chrome) |
+| Bookmarks | `bookmarks recipes` · `bookmarks --count` · add the page in front: `bookmark "Title"` | |
 | Downloads | `downloads` — newest files, each with the address it came from | |
-| Settings | `settings cookies` — Chrome: searched settings page; Safari: that pane | |
+| Settings | `settings cookies` — Chrome: a settings tab searched for it; Safari: the pane whose name matches (`settings` alone lists the panes; names in the system language — see `playbooks/safari.md`); `read` shows every option `on`/`off`; `hotkey cmd w` closes Safari's settings window | |
 | Address and title | `url` | |
 | JavaScript | `js "document.title"` — only if the user enabled it (see below) | |
 
 The browser meant is the one in front, else the one whose window is highest.
-Name another with `use chrome` (inside a `do`) or `ANYBROWSER_BROWSER=safari`.
+Name another with `ANYBROWSER_BROWSER=chrome anybrowser.sh …` for one call, or `use chrome`
+as a step of a `do` — it lasts until that `do` ends, not into the next call.
 Browser commands work on a browser in the background; `go`, `tab` and `private`
 bring it to the front, because the clicks after them need it there.
 
