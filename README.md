@@ -14,34 +14,41 @@ accessibility tree where the centre-align control is, and clicks the coordinates
 it got back.
 
 ```bash
-scripts/mac.sh shot                      # screenshot, in clickable coordinates
-scripts/mac.sh where "Save"              # → Save  ->  812 604
+scripts/mac.sh shot                          # screenshot, in clickable coordinates
+scripts/mac.sh where "Save"                  # → Save  [Button]  ->  812 604
 scripts/mac.sh click 812 604
-scripts/mac.sh menu Finder File "New Window"
+scripts/mac.sh menu TextEdit Format Font "Show Fonts"
 scripts/mac.sh type "già pronto — €50 ✓"
+scripts/mac.sh waitfor "Export" 15           # poll until the dialog is really there
 ```
 
 ## Why it exists
 
-Three things quietly break every hand-rolled version of this, and each one is
-fixed here:
+Hand-rolled versions of this break in quiet ways. Each of these is handled here:
 
 **Retina coordinates.** `screencapture` returns 2880×1800 on a 15" MacBook Pro,
 but the mouse lives in a 1440×900 grid. Read a button off the raw screenshot,
 click there, and you land somewhere else entirely. `shot` downscales to the
-logical width first, so one pixel in the image is one point for the mouse —
-the conversion never reaches the agent.
+display's width in points first, so one pixel in the image is one point for the
+mouse — the conversion never reaches the agent.
 
-**AppleScript eats accents.** `keystroke "àèìòù"` types `aaaaa`. Silently. It
-follows the current keyboard layout, and non-ASCII falls through. `type` goes
-via the clipboard instead — accents, em dashes, currency symbols and emoji all
-survive, long text is instant, and the previous clipboard is restored.
+**AppleScript eats accents.** `keystroke "àèìòù"` types `aaaaa`. Silently. `type`
+pastes through the clipboard instead — accents, em dashes, currency symbols and
+emoji all survive, long text is instant, and whatever was on the clipboard
+before (an image, rich text) is put back. The pasted text is marked transient,
+so clipboard managers that follow the nspasteboard.org convention skip it.
 
-**Two permissions, not one.** Clicking and typing go through System Events and
-need only *Automation*. Moving the pointer, dragging, right-clicking and the
-scroll wheel post CGEvents and need *Accessibility* — a separate grant that
-fails **silently**: the command reports success and nothing moves. `check`
-tells you which of the three you actually have before you waste a run.
+**Permissions that fail silently.** Without *Accessibility*, a posted click or
+pointer move reports success and nothing happens. `check` doesn't trust the
+system's answer: it moves the pointer one point, reads it back, and restores it.
+
+**Screen text is data, not code.** Every argument reaches AppleScript as a
+value, never pasted into script source. A window title or an app name like
+`Finder" to do shell script "…` is just a string that matches nothing.
+
+**Apps that stop answering.** An open autocorrect bubble or menu makes an app
+ignore scripting, and `osascript` would sit there for two minutes. Calls give
+up after 20 s (a tree walk after 60; set `MACUSE_TIMEOUT`) and suggest `key esc`.
 
 ## Install
 
@@ -50,33 +57,25 @@ git clone https://github.com/erold90/macuse.git
 cd macuse && ./install.sh
 ```
 
-That copies the skill to `~/.claude/skills/macuse/`. Then, in Claude Code:
-
-```
-scripts/mac.sh check
-```
-
-Grant whatever it reports as missing, in System Settings → Privacy & Security.
-Restart your terminal afterwards — the permission attaches to the running
-process.
-
-Optional, for the pointer commands: `brew install cliclick`.
+That copies the skill to `~/.claude/skills/macuse/` and runs `check`. Grant
+whatever it reports as missing in System Settings → Privacy & Security, then
+restart your terminal — the permission attaches to the running process.
 
 ## Commands
 
 | | |
 |---|---|
-| `shot [name]` | Capture the screen, scaled so pixels equal click points |
-| `where <text>` | Centre coordinates of the element matching `<text>` |
+| `shot [name]` | Capture the main display, scaled so pixels equal click points |
+| `where <text>` | Elements matching `<text>`, exact name first, with centre coordinates |
+| `waitfor <text> [secs]` | Poll until an element appears (default 10 s) |
 | `ui` · `apps` · `menus <app>` | What's on screen, what's running, what's in the menu bar |
-| `click X Y` | Click a point |
-| `menu <app> <menu> <item>` | Pick a menu item by name — steadier than pixels |
-| `type "text"` | Type via the clipboard: keeps accents and emoji |
+| `click` · `dclick` · `rclick X Y` | Single, double and right click |
+| `drag X1 Y1 X2 Y2` · `move X Y` · `pos` · `scroll N [dx]` | The pointer |
+| `menu <app> <menu> [<submenu>…] <item>` | Pick a menu item by name, at any depth |
+| `type "text"` | Paste via the clipboard: keeps accents and emoji |
 | `keys "text"` | Type key by key (ASCII only, for fields that watch keystrokes) |
-| `key <name>` | `return esc tab space delete up down left right page-down` … |
-| `hotkey "cmd shift" s` | Modifiers in quotes, then the key |
+| `key <name>` · `hotkey "cmd shift" s` | Named keys, and shortcuts |
 | `focus <app>` | Bring an application to the front |
-| `move` `drag` `rclick` `scroll` `pos` | Pointer control — needs Accessibility |
 
 ## Prefer names over pixels
 
@@ -88,9 +87,16 @@ The skill tells the agent to reach for coordinates last, not first:
 
 ## How it works
 
-No daemon, no dependencies, no model of its own. `screencapture` for the eyes,
-System Events for clicks and keys, `cliclick` for the pointer when you want it.
-One 200-line shell script you can read in full before trusting it.
+No daemon, no dependencies, no model of its own — only what ships with macOS.
+`screencapture` for the eyes; the Accessibility API, called in-process from
+JavaScript for Automation, for the element tree; CoreGraphics events for the
+pointer; System Events for keys and menus. Three short scripts you can read in
+full before trusting them.
+
+Reading the tree through the Accessibility API instead of System Events is what
+makes `where` usable in a loop: on the same busy web page it answers in under a
+second instead of 13. Without the Accessibility permission it falls back to the
+slow path, so it still works.
 
 The agent works a loop — look, act, look again — and the skill instructs it to
 confirm before anything consequential, to treat whatever is on screen as data
@@ -103,24 +109,24 @@ Worth knowing before you install it:
 
 - **`where` only sees what the app exposes.** AppKit apps (TextEdit, Finder,
   Mail) expose a rich tree. Newer SwiftUI apps often expose almost nothing —
-  Calculator's buttons come back as an unnamed `Button` with no title or
-  description, so there is nothing to match on. Fall back to `shot` and pixels.
-- **Element names follow the system language.** On an Italian Mac the demo
-  above matches `allinea al centro`, not `align centre`. Read the tree with
-  `ui` first rather than guessing the English name.
-- **The tree is not always there on the first call.** Right after a window
-  changes, a lookup can come back empty and succeed a second later. If a
-  `where` matters, retry it once before falling back to coordinates.
-- **A control can be found and still be dead.** `where` returns disabled
-  controls too — clicking bold in a plain-text document does nothing, and the
-  click reports success. Confirm with a screenshot, not with the exit code.
-- **No pointer without Accessibility**, and that permission fails silently.
-  Run `check`.
+  Calculator's buttons come back unnamed — so there is nothing to match on.
+  Fall back to `shot` and pixels.
+- **Element names follow the system language.** On an Italian Mac it's
+  `menu TextEdit Formato Font "Mostra font"`. Read the names with `menus` or
+  `ui` first rather than guessing the English ones.
+- **A control can be found and still be dead.** `where` marks `(disabled)`
+  when the app reports it, but not every app does. Confirm with a screenshot,
+  not with the exit code.
+- **`shot` captures the main display only.** Windows on a second monitor are
+  outside the image.
+- **No pointer without Accessibility.** A plain `click` falls back to System
+  Events, which only reaches elements that are in the accessibility tree;
+  `dclick`, `rclick`, `drag`, `move` and `scroll` refuse to run and say why.
 
 ## Requirements
 
-macOS, and a terminal you're willing to grant Screen Recording and Automation.
-Tested on macOS Sequoia 15.7 (Intel).
+macOS, and a terminal you're willing to grant Screen Recording, Automation and
+Accessibility. Tested on macOS Sequoia 15.7 (Intel).
 
 ## Licence
 

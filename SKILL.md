@@ -17,9 +17,9 @@ screenshot is the point you pass to `click`**. No conversion, no Retina maths.
 scripts/mac.sh check
 ```
 
-It prints one line per permission. Clicking and typing only need Automation,
-which is usually already granted; the pointer commands need Accessibility, and
-the check tells the user exactly where to grant it. Don't guess — run it.
+One line per permission. Without **Accessibility**, pointer events are dropped
+silently and `where` crawls (10+ s instead of under one); `check` measures it by
+moving the pointer one point and reading it back. Don't guess — run it.
 
 ## Work in a loop, and look between steps
 
@@ -37,20 +37,32 @@ Pixels are the last resort, not the first. In order of reliability:
 
 | Want | Use | Why |
 |---|---|---|
-| A menu command | `menu Finder File "New Window"` | Names don't move |
+| A menu command | `menu TextEdit Format Font "Show Fonts"` | Names don't move |
 | A named button or field | `where "Save"` then `click X Y` | Read from the accessibility tree |
 | Anything else | `shot`, read it, `click X Y` | Works everywhere, breaks most easily |
 
-`where` searches the frontmost window's accessibility tree and returns the
-centre of anything whose name or description contains your text.
+`where` searches the frontmost window and lists matches **exact name first**,
+flagging `(disabled)` controls — clicking those does nothing. It exits 1 when
+nothing matches. Right after a window changes, use `waitfor "Save"` instead: it
+polls until the element exists.
+
+Names follow the system language: on an Italian Mac it's `menu TextEdit Formato
+Font "Mostra font"`. Read them with `menus <app>` or `ui` rather than guessing.
 
 ## Typing
 
-`type` goes through the clipboard, so accents, dashes and emoji survive intact
-and long text is instant. It saves and restores whatever was on the clipboard.
+`type` pastes through the clipboard, so accents, dashes and emoji survive intact
+and long text is instant. It restores the previous clipboard afterwards —
+images and rich text included.
 
 Use `keys` only for fields that listen for real keystrokes — it is ASCII-only:
 `keystroke` silently turns "àèìòù" into "aaaaa".
+
+## When an app stops answering
+
+Real keystrokes can raise an autocorrect suggestion, and while a popover like
+that is open the app ignores scripting: `menu`, `where` and friends hang. They
+give up after 20 s and say so — then `key esc` and try again.
 
 ## Rules that keep this safe
 
@@ -69,12 +81,12 @@ Use `keys` only for fields that listen for real keystrokes — it is ASCII-only:
 ## Commands
 
 ```
-LOOK   shot [name] · where <text> · ui · apps · menus <app>
-ACT    click X Y · menu <app> <menu> <item> · type "text" · keys "text"
-       key <name> · hotkey "cmd shift" s · focus <app>
-POINTER (needs Accessibility)
-       move X Y · drag X1 Y1 X2 Y2 · rclick X Y · scroll N · pos
+LOOK   shot [name] · where <text> · waitfor <text> [secs] · ui · apps · menus <app>
+ACT    click X Y · dclick X Y · rclick X Y · drag X1 Y1 X2 Y2
+       move X Y · pos · scroll N [dx]
+       menu <app> <menu> [<submenu>...] <item> · focus <app>
+       type "text" · keys "text" · key <name> · hotkey "cmd shift" s
 ```
 
 `key` names: `return enter tab space delete forward-delete esc up down left
-right page-up page-down home end f1`–`f8`.
+right page-up page-down home end f1`–`f12`.
