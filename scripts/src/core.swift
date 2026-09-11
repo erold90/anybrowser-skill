@@ -1,13 +1,14 @@
-// macuse — eyes and hands for the macOS desktop, in one native binary.
+// anybrowser — eyes and hands for browsers and the rest of the macOS desktop.
 //
 // Coordinates are logical points: a pixel read off `shot` is the point `click`
 // takes. Everything goes through the Accessibility API and CoreGraphics events,
-// in-process: no AppleScript, no helper apps, nothing to inject into.
+// in-process: no helper apps, nothing to inject into. (browser.swift adds what
+// browsers answer to scripts and keep in files.)
 //
 // Every action waits for the app to react and says what changed, so the agent
 // gets its confirmation in the same call instead of taking a screenshot.
 //
-// Build: swiftc -O macuse.swift -o macuse   (install.sh does it)
+// Build: swiftc -O src/*.swift -o anybrowser   (anybrowser.sh does it on first use)
 
 import AppKit
 import ApplicationServices
@@ -36,9 +37,9 @@ func env(_ name: String, _ fallback: Int) -> Int {
 func now() -> Double { CFAbsoluteTimeGetCurrent() }
 
 let launched = CFAbsoluteTimeGetCurrent()
-/// MACUSE_DEBUG=1: timestamps on stderr, to see where a slow step spends its time.
+/// ANYBROWSER_DEBUG=1: timestamps on stderr, to see where a slow step spends its time.
 func debug(_ s: @autoclosure () -> String) {
-    if ProcessInfo.processInfo.environment["MACUSE_DEBUG"] != nil {
+    if ProcessInfo.processInfo.environment["ANYBROWSER_DEBUG"] != nil {
         warn(String(format: "  %6.0f ms  ", (CFAbsoluteTimeGetCurrent() - launched) * 1000) + s())
     }
 }
@@ -96,7 +97,7 @@ func requireUnlocked() throws {
 func requireTrust(_ what: String) throws {
     try requireUnlocked()
     if !AXIsProcessTrusted() {
-        throw Fail(message: "\(what) needs the Accessibility permission — run: macuse check")
+        throw Fail(message: "\(what) needs the Accessibility permission — run: anybrowser check")
     }
 }
 
@@ -181,8 +182,9 @@ func reaches(_ p: CGPoint, _ target: AXUIElement) -> Bool {
 
 let inputRoles: Set<String> = ["TextField", "TextArea", "ComboBox", "SearchField", "SecureTextField"]
 let textRoles: Set<String> = ["StaticText", "Heading", "Link", "Button", "Cell", "MenuItem", "TextArea"]
-let chromium = ["com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac",
-                "company.thebrowser.Browser", "com.vivaldi.Vivaldi", "com.operasoftware.Opera"]
+let chromium = ["com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac", "org.chromium.Chromium",
+                "company.thebrowser.Browser", "com.vivaldi.Vivaldi", "com.operasoftware.Opera",
+                "company.thebrowser.dia", "ai.perplexity.comet"]
 
 // One round trip per element instead of one per attribute.
 let wanted = [kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute,
@@ -190,7 +192,7 @@ let wanted = [kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXV
               kAXEnabledAttribute, kAXChildrenAttribute] as CFArray
 
 func walk(_ root: AXUIElement, maxDepth: Int = 40, maxNodes: Int = 8000,
-          stop: ((Node) -> Bool)? = nil, clip: CGRect? = nil) -> (nodes: [Node], sawWeb: Bool) {
+          stop: ((Node) -> Bool)? = nil, clip: CGRect? = nil, inWeb startInWeb: Bool = false) -> (nodes: [Node], sawWeb: Bool) {
     var nodes: [Node] = []
     var visited = 0
     var sawWeb = false
@@ -240,14 +242,14 @@ func walk(_ root: AXUIElement, maxDepth: Int = 40, maxNodes: Int = 8000,
             for k in kids { visit(k, depth + 1, inWeb) }
         }
     }
-    visit(root, 0, false)
+    visit(root, 0, startInWeb)
     return (nodes, sawWeb)
 }
 
 /// Named elements of the focused window. Wakes Chromium's page tree when needed.
 func frontTree(stop: ((Node) -> Bool)? = nil, visibleOnly: Bool = false) throws -> [Node] {
     try requireUnlocked()
-    guard AXIsProcessTrusted() else { throw Fail(message: "reading the screen needs the Accessibility permission — run: macuse check") }
+    guard AXIsProcessTrusted() else { throw Fail(message: "reading the screen needs the Accessibility permission — run: anybrowser check") }
     guard let app = focusedApp() else { throw Fail(message: "the frontmost app has no window") }
     guard let win = app.element(kAXFocusedWindowAttribute) ?? app.element(kAXMainWindowAttribute) else {
         throw Fail(message: "the frontmost app has no window")
@@ -257,60 +259,44 @@ func frontTree(stop: ((Node) -> Bool)? = nil, visibleOnly: Bool = false) throws 
         clip = CGRect(origin: o, size: sz).intersection(CGDisplayBounds(CGMainDisplayID()))
     }
     var result = walk(win, stop: stop, clip: clip)
-    let running = NSRunningApplication(processIdentifier: app.pid)
-    let bundle = running?.bundleIdentifier ?? ""
-    let frameworks = running?.bundleURL?.appendingPathComponent("Contents/Frameworks").path ?? ""
-    let electron = FileManager.default.fileExists(atPath: frameworks + "/Electron Framework.framework")
-        || FileManager.default.fileExists(atPath: frameworks + "/Chromium Embedded Framework.framework")
-    let browser = chromium.contains(where: { bundle.hasPrefix($0) })
     // A lookup that already found its exact match doesn't need the page woken.
     let matched = stop.map { found in result.nodes.last.map(found) ?? false } ?? false
-    if !result.sawWeb, !matched, browser || electron {
-        // Chromium builds a page's tree only when an assistive app asks: browsers
-        // listen for the attribute VoiceOver sets, Electron apps for
-        // AXManualAccessibility. Chrome answers the first with an error and obeys
-        // anyway, ~2 s later; asking again before then restarts the wait, and a
-        // marker per process keeps windows with no page from paying it each call.
-        let marker = NSTemporaryDirectory() + "macuse-web-\(app.pid)"
-        let age = (try? FileManager.default.attributesOfItem(atPath: marker)[.modificationDate] as? Date)
-            .flatMap { $0 }.map { -$0.timeIntervalSinceNow } ?? .infinity
-        if age > 120 {
-            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-            if electron { AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) }
-            FileManager.default.createFile(atPath: marker, contents: nil)
-            // Wait for a page with something in it, not just an empty web area.
-            let deadline = now() + 6
-            while now() < deadline {
-                pause(250)
-                result = walk(win, stop: stop, clip: clip)
-                if result.sawWeb && result.nodes.filter({ $0.inWeb }).count >= 3 { break }
-            }
+    if !result.sawWeb, !matched, wakeWebTree(app, pid: app.pid) {
+        // Wait for a page with something in it, not just an empty web area.
+        let deadline = now() + 6
+        while now() < deadline {
+            pause(250)
+            result = walk(win, stop: stop, clip: clip)
+            if result.sawWeb && result.nodes.filter({ $0.inWeb }).count >= 3 { break }
         }
     }
     return result.nodes
 }
 
-/// Exact name, then the needle as a whole first word ("Invia" → "Invia (⌘Enter)"),
-/// then any prefix ("Inviati"), then anywhere. Invisible direction marks, which web
-/// apps put around shortcuts, don't count.
-func rank(_ nodes: [Node], _ needle: String) -> [Node] {
-    let invisible = CharacterSet(charactersIn: "\u{200E}\u{200F}\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}\u{2066}\u{2067}\u{2068}\u{2069}")
-    func clean(_ s: String) -> String {
-        String(String.UnicodeScalarView(s.unicodeScalars.filter { !invisible.contains($0) })).lowercased()
-            .trimmingCharacters(in: .whitespaces)
+/// Invisible direction marks, which web apps put around shortcuts, don't count.
+let invisibleMarks = CharacterSet(charactersIn: "\u{200E}\u{200F}\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}\u{2066}\u{2067}\u{2068}\u{2069}")
+
+func cleanName(_ s: String) -> String {
+    String(String.UnicodeScalarView(s.unicodeScalars.filter { !invisibleMarks.contains($0) })).lowercased()
+        .trimmingCharacters(in: .whitespaces)
+}
+
+/// How well a name matches: 0 exact, 1 the needle as its whole first word
+/// ("Invia" → "Invia (⌘Enter)"), 2 any prefix ("Inviati"), 3 anywhere, nil not at all.
+func score(_ name: String, _ needle: String) -> Int? {
+    let n = cleanName(needle), c = cleanName(name)
+    guard !n.isEmpty else { return nil }
+    if c == n { return 0 }
+    if c.hasPrefix(n) {
+        let next = c[c.index(c.startIndex, offsetBy: n.count)...].first
+        return (next.map { !$0.isLetter && !$0.isNumber } ?? true) ? 1 : 2
     }
-    let n = clean(needle)
-    return nodes.enumerated().compactMap { (i, node) -> (Int, Int, Node)? in
-        let name = clean(node.name)
-        let r: Int
-        if name == n { r = 0 }
-        else if name.hasPrefix(n) {
-            let next = name[name.index(name.startIndex, offsetBy: n.count)...].first
-            r = (next.map { !$0.isLetter && !$0.isNumber } ?? true) ? 1 : 2
-        }
-        else if name.contains(n) { r = 3 }
-        else { return nil }
-        return (r, i, node)
+    return c.contains(n) ? 3 : nil
+}
+
+func rank(_ nodes: [Node], _ needle: String) -> [Node] {
+    nodes.enumerated().compactMap { (i, node) -> (Int, Int, Node)? in
+        score(node.name, needle).map { ($0, i, node) }
     }.sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }.map { $0.2 }
 }
 
@@ -332,10 +318,10 @@ func line(_ n: Node) -> String {
 }
 
 /// Best enabled match with a point; scrolls it into view when it's off screen.
-/// Waits up to MACUSE_WAIT seconds (default 2) for it to appear: the previous step
+/// Waits up to ANYBROWSER_WAIT seconds (default 2) for it to appear: the previous step
 /// may still be closing a dialog or loading. Only the search repeats, never an action.
 func pick(_ needle: String, fields: Bool = false, roles: Set<String>? = nil, needPoint: Bool = true) throws -> Node {
-    let deadline = now() + Double(env("MACUSE_WAIT", 2))
+    let deadline = now() + Double(env("ANYBROWSER_WAIT", 2))
     var found: Node? = nil
     let exact = needle.lowercased().trimmingCharacters(in: .whitespaces)
     let allowed = fields ? inputRoles : roles
@@ -349,7 +335,15 @@ func pick(_ needle: String, fields: Bool = false, roles: Set<String>? = nil, nee
     // The first exact, usable match in tree order is what ranking would pick
     // anyway: stop reading the window there.
     let good = { (n: Node) -> Bool in usable(n) && n.name.lowercased() == exact }
-    while true {
+    if isRef(needle) {
+        let node = try resolveRef(needle)
+        if node.disabled { throw Fail(message: "\(label(node)) is disabled") }
+        if let allowed = allowed, !allowed.contains(node.role) { throw Fail(message: "\(needle) is a \(node.role), not what this command works on") }
+        found = node
+    }
+    while found == nil {
+        // On a web page the browser's own search answers in milliseconds.
+        if let fast = webPick(needle, usable) { found = fast; break }
         let nodes = ((try? frontTree(stop: good)) ?? []).filter(usable)
         found = rank(nodes, needle).first
         if found != nil || now() >= deadline { break }
@@ -366,6 +360,63 @@ func pick(_ needle: String, fields: Bool = false, roles: Set<String>? = nil, nee
                         disabled: best.disabled, inWeb: best.inWeb, on: best.on)
         }
         best.reachable = reaches(best.point!, best.el)
+    }
+    return best
+}
+
+// MARK: - References
+
+/// Listings number what they show (@1, @2…) so the next command can name exactly
+/// that element, even among several with the same name. A ref is remembered by what
+/// finds it again — app, role, name, page id, position — not by a pointer, so it
+/// survives the page re-rendering, and is gone when the element is.
+struct Ref: Codable { let pid: Int32; let role: String; let name: String; let dom: String; let x: Double; let y: Double; let web: Bool }
+
+let refsPath = NSTemporaryDirectory() + "anybrowser-refs.json"
+
+func numbered(_ nodes: [Node], limit: Int, _ format: (Node) -> String) -> [String] {
+    var refs: [Ref] = []
+    var lines: [String] = []
+    var last = ""
+    for n in nodes {
+        let body = format(n)
+        if body == last { continue }
+        last = body
+        if refs.count >= limit { lines.append(body); continue }       // counted, not numbered
+        AXUIElementSetMessagingTimeout(n.el, 0.3)
+        refs.append(Ref(pid: n.el.pid, role: n.role, name: n.name, dom: n.inWeb ? n.el.text("AXDOMIdentifier") : "",
+                        x: Double(n.point?.x ?? -1), y: Double(n.point?.y ?? -1), web: n.inWeb))
+        lines.append("@\(refs.count) " + body)
+    }
+    if let data = try? JSONEncoder().encode(refs) { FileManager.default.createFile(atPath: refsPath, contents: data) }
+    return lines
+}
+
+func isRef(_ s: String) -> Bool { s.hasPrefix("@") && Int(s.dropFirst()) != nil }
+
+func resolveRef(_ token: String) throws -> Node {
+    guard let n = Int(token.dropFirst()), let data = FileManager.default.contents(atPath: refsPath),
+          let refs = try? JSONDecoder().decode([Ref].self, from: data), let ref = refs[safe: n - 1] else {
+        throw Fail(message: "no element \(token) — refs come from the last ui, where, find or links", code: 2)
+    }
+    try requireUnlocked()
+    guard let app = focusedApp(), app.pid == ref.pid else {
+        throw Fail(message: "\(token) was listed in another app than the one in front now — bring it back, or list again")
+    }
+    var candidates: [Node] = []
+    if ref.web, let win = app.element(kAXFocusedWindowAttribute), let web = webArea(in: win) {
+        candidates = webSearch(web, "AXAnyTypeSearchKey", text: ref.name, limit: 200).compactMap { walk($0, maxDepth: 0, inWeb: true).nodes.first }
+    }
+    if !candidates.contains(where: { $0.role == ref.role && $0.name == ref.name }) { candidates = (try? frontTree()) ?? [] }
+    let same = candidates.filter { $0.role == ref.role && $0.name == ref.name }
+    let byDom = ref.dom.isEmpty ? [] : same.filter { $0.el.text("AXDOMIdentifier") == ref.dom }
+    let pool = byDom.isEmpty ? same : byDom
+    func distance(_ node: Node) -> Double {
+        guard let p = node.point, ref.x >= 0 else { return .infinity }
+        return hypot(Double(p.x) - ref.x, Double(p.y) - ref.y)
+    }
+    guard let best = pool.min(by: { distance($0) < distance($1) }) else {
+        throw Fail(message: "\(token) (\(flat(ref.name).prefix(60)) [\(ref.role)]) isn't there any more — list again")
     }
     return best
 }
@@ -410,7 +461,7 @@ final class Watch {
     }
 
     /// Spin until the app goes quiet after reacting, or gives no sign at all.
-    func settle(first: Int = env("MACUSE_SETTLE", 250), quiet: Int = 90, max: Int = 1500, until: ((Watch) -> Bool)? = nil) {
+    func settle(first: Int = env("ANYBROWSER_SETTLE", 250), quiet: Int = 90, max: Int = 1500, until: ((Watch) -> Bool)? = nil) {
         if first == 0 { return }
         let start = now()
         while true {
@@ -517,27 +568,63 @@ func looksLikeDialog(_ w: AXUIElement, kind: String) -> Bool {
     return size.width < 640 && size.height < 360
 }
 
-let webBundles = ["com.apple.Safari", "com.apple.SafariTechnologyPreview"] + chromium
 
 /// Browsers and Electron/CEF apps: pages whose text changes without telling anyone.
 func isWebApp(_ pid: pid_t) -> Bool {
     guard let app = NSRunningApplication(processIdentifier: pid) else { return false }
     let bundle = app.bundleIdentifier ?? ""
-    if webBundles.contains(where: { bundle.hasPrefix($0) }) { return true }
+    if browserBundles.contains(where: { bundle.hasPrefix($0) }) { return true }
     let frameworks = app.bundleURL?.appendingPathComponent("Contents/Frameworks").path ?? ""
     return FileManager.default.fileExists(atPath: frameworks + "/Electron Framework.framework")
         || FileManager.default.fileExists(atPath: frameworks + "/Chromium Embedded Framework.framework")
 }
 
-/// The text a person can see on the page right now, line by line. Never wakes a
+/// The page in front and all its text, taken in a few milliseconds through text
+/// markers — cheap enough to take before and after every action. Never wakes a
 /// page tree (that can take seconds): a report must stay quick.
-func visiblePageText() -> [String] {
+struct PageState { let web: AXUIElement; let text: String }
+
+func pageState() -> PageState? {
     guard let app = focusedApp(timeout: 0.5), let win = app.element(kAXFocusedWindowAttribute),
-          let o = axPoint(win.attr(kAXPositionAttribute)), let size = axSize(win.attr(kAXSizeAttribute)) else { return [] }
-    let clip = CGRect(origin: o, size: size).intersection(CGDisplayBounds(CGMainDisplayID()))
-    return walk(win, maxNodes: 3000, clip: clip).nodes
-        .filter { $0.inWeb && ["StaticText", "Heading", "Cell", "Link"].contains($0.role) }
-        .map { String(flat($0.name).prefix(100)) }
+          let web = webArea(in: win), let text = pageText(web) else { return nil }
+    return PageState(web: web, text: text)
+}
+
+/// New text on the page after an action: a status line, an error, a result.
+/// WebKit's text has its line breaks: compare lines. Chromium's comes glued
+/// ("NameEmail"): find the stretch that changed, then read just those lines.
+func pageChanges(_ before: PageState, _ after: PageState) -> [String] {
+    guard CFEqual(before.web, after.web), before.text != after.text else { return [] }
+    let clean = { (s: String) in flat(s.replacingOccurrences(of: "\u{FFFC}", with: " ")) }
+    if after.text.filter({ $0 == "\n" }).count * 150 >= after.text.count {
+        let old = Set(before.text.components(separatedBy: .newlines).map(clean))
+        var seen = Set<String>()
+        return after.text.components(separatedBy: .newlines).map(clean)
+            .filter { !$0.isEmpty && !old.contains($0) && seen.insert($0).inserted }.prefix(4).map { String($0.prefix(100)) }
+    }
+    let a = Array(before.text.utf16), b = Array(after.text.utf16)
+    var p = 0
+    while p < a.count && p < b.count && a[p] == b[p] { p += 1 }
+    var q = 0
+    while q < a.count - p && q < b.count - p && a[a.count - 1 - q] == b[b.count - 1 - q] { q += 1 }
+    guard b.count - q > p else { return [] }                    // only removed text
+    func param(_ name: String, _ arg: CFTypeRef) -> CFTypeRef? {
+        var out: CFTypeRef?
+        return AXUIElementCopyParameterizedAttributeValue(after.web, name as CFString, arg, &out) == .success ? out : nil
+    }
+    guard var marker = param("AXTextMarkerForIndex", NSNumber(value: p)) else { return [] }
+    var lines: [String] = []
+    for _ in 0..<8 {
+        guard let range = param("AXLineTextMarkerRangeForTextMarker", marker) else { break }
+        let line = clean((param("AXStringForTextMarkerRange", range) as? String) ?? "")
+        if !line.isEmpty && !before.text.contains(line) && !lines.contains(line) { lines.append(String(line.prefix(100))) }
+        if lines.count >= 4 { break }
+        guard let end = param("AXNextLineEndTextMarkerForTextMarker", marker),
+              let next = param("AXNextTextMarkerForTextMarker", end), !CFEqual(next, marker) else { break }
+        if let index = param("AXIndexForTextMarker", next) as? NSNumber, index.intValue >= b.count - q { break }
+        marker = next
+    }
+    return lines
 }
 
 struct Snap {
@@ -702,13 +789,13 @@ var windowChangedAt = 0.0
 
 /// Run an action, let the app react, and report what changed.
 func acting(_ body: () throws -> String) throws -> String {
-    if env("MACUSE_SETTLE", 250) == 0 {                // fire and forget: no report
+    if env("ANYBROWSER_SETTLE", 250) == 0 {                // fire and forget: no report
         let head = try body()
         return head.isEmpty ? "sent" : head
     }
     let before = Snap.take()
     let web = before.pid > 0 && isWebApp(before.pid)
-    let pageBefore = web ? Set(visiblePageText()) : []
+    let pageBefore = web ? pageState() : nil
     let watch = Watch()
     debug("acting: before-snapshot taken")
     let head = try body()
@@ -745,9 +832,8 @@ func acting(_ body: () throws -> String) throws -> String {
         // A new page or tab is all new text: the title already says what happened.
         // So is the page coming back from behind a dialog that hid it.
         guard web, after.pid == before.pid, after.dialog.isEmpty, before.dialog.isEmpty, after.window == before.window else { pageAdded = []; return }
-        let now = visiblePageText()
-        var seen = Set<String>()
-        pageAdded = now.filter { !pageBefore.contains($0) && !$0.isEmpty && seen.insert($0).inserted }.prefix(4).map { $0 }
+        guard let b = pageBefore, let now = pageState() else { pageAdded = []; return }
+        pageAdded = pageChanges(b, now)
     }
     diffPage()
     // Silence can just be slowness: an app still launching, a settings pane
@@ -781,9 +867,9 @@ func post(_ type: CGEventType, _ p: CGPoint, _ button: CGMouseButton = .left, cl
 
 /// How long a move takes. By default it scales with distance — 25 ms for a short
 /// hop, ~110 ms across the screen — so the pointer travels like a hand rather than
-/// jumping, at little cost. MACUSE_GLIDE=0 teleports, MACUSE_GLIDE=<ms> fixes it.
+/// jumping, at little cost. ANYBROWSER_GLIDE=0 teleports, ANYBROWSER_GLIDE=<ms> fixes it.
 func glideDuration(_ distance: Double) -> Double {
-    if let raw = ProcessInfo.processInfo.environment["MACUSE_GLIDE"], let ms = Double(raw), ms >= 0 { return distance > 2 ? ms : 0 }
+    if let raw = ProcessInfo.processInfo.environment["ANYBROWSER_GLIDE"], let ms = Double(raw), ms >= 0 { return distance > 2 ? ms : 0 }
     return distance > 2 ? min(110, 25 + distance * 0.07) : 0
 }
 
@@ -1219,7 +1305,7 @@ func choose(_ popup: Node, _ option: String) throws -> String {
 /// pixel's coordinates to get the point to click.
 func shot(_ name: String, region: CGRect? = nil, display: Int? = nil) throws -> String {
     try requireUnlocked()
-    // A plain name goes to MACUSE_SHOTS (default: the temp folder) as <name>.png,
+    // A plain name goes to ANYBROWSER_SHOTS (default: the temp folder) as <name>.png,
     // replacing the previous shot of that name; an absolute path ending in .png is used as given.
     let out: String
     if name.hasPrefix("/") {
@@ -1227,7 +1313,7 @@ func shot(_ name: String, region: CGRect? = nil, display: Int? = nil) throws -> 
         out = name
     } else {
         guard !name.contains("/"), !name.hasPrefix(".") else { throw Fail(message: "shot takes a plain name or an absolute .png path", code: 2) }
-        let dir = ProcessInfo.processInfo.environment["MACUSE_SHOTS"] ?? NSTemporaryDirectory()
+        let dir = ProcessInfo.processInfo.environment["ANYBROWSER_SHOTS"] ?? NSTemporaryDirectory()
         out = (dir as NSString).appendingPathComponent("\(name).png")
     }
     let raw = out + ".raw.png"
@@ -1255,7 +1341,7 @@ func shot(_ name: String, region: CGRect? = nil, display: Int? = nil) throws -> 
     defer { try? FileManager.default.removeItem(atPath: raw) }
     guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: raw) as CFURL, nil),
           let image = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
-        throw Fail(message: "screenshot failed — grant Screen Recording (macuse check)")
+        throw Fail(message: "screenshot failed — grant Screen Recording (anybrowser check)")
     }
     // Retina captures at 2x: scale to the area's size in points, so one pixel in
     // the image is one point for the mouse.
@@ -1281,660 +1367,3 @@ func frame(_ el: AXUIElement) -> CGRect? {
     return CGRect(origin: o, size: s)
 }
 
-// MARK: - Commands
-
-let usage = """
-macuse — eyes and hands for the macOS desktop
-
-LOOK
-  shot [name] [--window | --region X Y W H | --display N]
-                           capture, scaled so pixels = points (origin given if not 0,0)
-  where <text>             elements matching <text>, best first, with centre points
-  waitfor <text> [secs]    return as soon as <text> appears (default 10 s)
-  waitgone <text> [secs]   return as soon as <text> is gone
-  read [--all]             the visible text in order, with field values — on a web page, the page
-  ui [--all] [--page]      named elements you can see (--all: offscreen too, --page: web page only)
-  apps · windows · menus <app> · pos
-
-ACT  (each one waits for the app to react and reports what changed)
-  click X Y | <name>       also dclick, rclick
-  press <name>             AXPress: no pointer, works while you use the mouse
-  fill <field> "text"      focus a text field by name, replace its content
-  select <menu> <option>   pick an option in a pop-up menu or <select>
-  type "text"              paste: instant, keeps accents and emoji
-  keys "text"              real keystrokes, any characters
-  key <name> · hotkey "cmd shift" s
-  menu <app> <menu> [<submenu>...] <item>
-  focus <app> (launches it if needed) · quit <app> · raise <window title>
-  window minimize|restore|maximize|fullscreen|close [title] · window move X Y [title] · window resize W H [title]
-  open <url> [app] · upload <file>
-  hover X Y | <name>       rest the pointer there: hover menus, tooltips
-  drag X1 Y1 X2 Y2 | <name> <name>   press, travel, release — says whether it left
-  move X Y · scroll N [dx]
-
-  do "<cmd>" "<cmd>" ...   run a sequence in one call; stops at the first failure
-  do -                     the same, one step per line from stdin
-
-  check                    report which permissions are missing
-  version                  version, macOS and architecture — paste it into bug reports
-
-Environment: MACUSE_SETTLE=ms (reaction wait, 0 = fire and forget),
-             MACUSE_GLIDE=ms (pointer travel; default scales with distance, 0 = jump),
-             MACUSE_WAIT=s (lookup wait), MACUSE_DEBUG=1, MACUSE_SHOTS=dir
-"""
-
-func point(_ args: [String], _ i: Int) throws -> CGPoint {
-    CGPoint(x: try number(args[safe: i], "x"), y: try number(args[safe: i + 1], "y"))
-}
-
-extension Array { subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil } }
-
-func execute(_ args: [String]) throws -> String {
-    guard let cmd = args.first else { return usage }
-    let a = Array(args.dropFirst())
-
-    switch cmd {
-    case "help", "-h", "--help":
-        return usage
-
-    case "version", "--version":
-        let os = ProcessInfo.processInfo.operatingSystemVersion
-        #if arch(arm64)
-        let arch = "arm64"
-        #else
-        let arch = "x86_64"
-        #endif
-        return "macuse \(version) · macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion) · \(arch)"
-
-    case "pos":
-        let p = pointer()
-        return "\(Int(p.x)) \(Int(p.y))"
-
-    case "shot":
-        let name = a.first(where: { !$0.hasPrefix("--") && Double($0) == nil }) ?? "shot"   // "shot" → $TMPDIR/shot.png
-        if let i = a.firstIndex(of: "--region") {
-            let x = try number(a[safe: i + 1], "x"), y = try number(a[safe: i + 2], "y")
-            let w = try number(a[safe: i + 3], "width"), h = try number(a[safe: i + 4], "height")
-            return try shot(name, region: CGRect(x: x, y: y, width: w, height: h))
-        }
-        if a.contains("--window") {
-            try requireTrust("shot --window")
-            guard let win = focusedApp()?.element(kAXFocusedWindowAttribute), let f = frame(win) else {
-                throw Fail(message: "the frontmost app has no window")
-            }
-            return try shot(name, region: f)
-        }
-        if let i = a.firstIndex(of: "--display") {
-            return try shot(name, display: Int(try number(a[safe: i + 1], "display")))
-        }
-        return try shot(name)
-
-    case "windows":
-        try requireTrust("windows")
-        var lines: [String] = []
-        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
-            let ax = AXUIElementCreateApplication(app.processIdentifier)
-            AXUIElementSetMessagingTimeout(ax, 0.5)
-            for w in realWindows(ax) {
-                let title = w.text(kAXTitleAttribute)
-                guard let f = frame(w) else { continue }
-                let minimized = (w.attr(kAXMinimizedAttribute) as? Bool) == true
-                lines.append("\(app.localizedName ?? "?") — \"\(title)\"  at \(Int(f.minX)) \(Int(f.minY)) size \(Int(f.width))×\(Int(f.height))" + (minimized ? "  (minimized)" : ""))
-            }
-        }
-        guard !lines.isEmpty else { throw Fail(message: "no windows") }
-        return lines.joined(separator: "\n")
-
-    case "quit":
-        guard let name = a.first else { throw Fail(message: "quit needs an app name", code: 2) }
-        guard let app = runningApp(name) else { return "\(name) isn't running" }
-        let pid = app.processIdentifier
-        return try acting {
-            // Like Cmd+Q: the app may stop to ask about unsaved work — the report shows that dialog.
-            app.terminate()
-            if until(3, { NSRunningApplication(processIdentifier: pid) == nil || app.isTerminated }) {
-                return "quit \(app.localizedName ?? name)"
-            }
-            return "asked \(app.localizedName ?? name) to quit — it's still open (waiting on a dialog?)"
-        }
-
-    case "window":
-        // window minimize|restore|maximize|fullscreen|close [title] · window move X Y [title] · window resize W H [title]
-        try requireTrust("window")
-        guard let action = a.first else {
-            throw Fail(message: "window needs an action: minimize, restore, close, maximize, fullscreen, move X Y, resize W H", code: 2)
-        }
-        var rest = Array(a.dropFirst())
-        var numbers: [Double] = []
-        if action == "move" || action == "resize" {
-            guard rest.count >= 2, let x = Double(rest[0]), let y = Double(rest[1]) else {
-                throw Fail(message: "window \(action) needs two numbers: window \(action) \(action == "move" ? "X Y" : "W H") [title]", code: 2)
-            }
-            numbers = [x, y]
-            rest = Array(rest.dropFirst(2))
-        }
-        let wanted = rest.joined(separator: " ").lowercased()
-        // The window: by (part of) its title across apps, or the front one.
-        var target: (NSRunningApplication?, AXUIElement)? = nil
-        if wanted.isEmpty {
-            if let app = focusedApp(), let w = app.element(kAXFocusedWindowAttribute) {
-                target = (NSRunningApplication(processIdentifier: app.pid), w)
-            }
-        } else {
-            func search() {
-                var bestRank = Int.max
-                for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
-                    let ax = AXUIElementCreateApplication(app.processIdentifier)
-                    AXUIElementSetMessagingTimeout(ax, 0.5)
-                    for w in realWindows(ax) {
-                        let t = w.text(kAXTitleAttribute).lowercased()
-                        let r = t == wanted ? 0 : t.hasPrefix(wanted) ? 1 : t.contains(wanted) ? 2 : -1
-                        if r >= 0 && r < bestRank { bestRank = r; target = (app, w) }
-                    }
-                }
-            }
-            search()
-            // A window can be mid-transition (leaving full screen takes ~1.5 s, during
-            // which it's in no list): give it the same wait a lookup by name gets.
-            let deadline = now() + Double(env("MACUSE_WAIT", 2))
-            while target == nil && now() < deadline {
-                if CFRunLoopRunInMode(.defaultMode, 0.2, false) == .finished { pause(200) }
-                search()
-            }
-            // Some apps (Calculator, SwiftUI) hide their windows from accessibility while
-            // in the background. The window server still lists them: front that app, look again.
-            if target == nil,
-               let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
-               let hit = list.first(where: { (($0[kCGWindowName as String] as? String) ?? "").lowercased().contains(wanted)
-                                              && ($0[kCGWindowLayer as String] as? Int) == 0 }),
-               let pid = hit[kCGWindowOwnerPID as String] as? pid_t, let app = NSRunningApplication(processIdentifier: pid) {
-                app.unhide()                                           // a hidden app's windows aren't on screen at all
-                app.activate(options: [])
-                _ = until(2) { NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }
-                search()
-            }
-        }
-        guard let (owner, win) = target else {
-            throw Fail(message: wanted.isEmpty ? "the frontmost app has no window" : "no window titled like: \(rest.joined(separator: " "))")
-        }
-        let title = win.text(kAXTitleAttribute).isEmpty ? "(untitled)" : "\"\(win.text(kAXTitleAttribute))\""
-        func where_() -> String {
-            guard let f = frame(win) else { return "" }
-            return " — now at \(Int(f.minX)) \(Int(f.minY)), \(Int(f.width))×\(Int(f.height))"
-        }
-        func set(_ attribute: String, _ value: CFTypeRef) throws {
-            let r = AXUIElementSetAttributeValue(win, attribute as CFString, value)
-            if r == .success { return }
-            if (win.attr("AXFullScreen") as? Bool) == true && attribute != "AXFullScreen" {
-                throw Fail(message: "\(title) is in full screen — window fullscreen \(rest.joined(separator: " ")) leaves it first")
-            }
-            throw Fail(message: "\(title) doesn't allow that (\(r.rawValue))")
-        }
-        switch action {
-        case "minimize", "minimise":
-            return try acting { try set(kAXMinimizedAttribute, kCFBooleanTrue); return "minimized \(title)" }
-        case "restore":
-            return try acting {
-                try set(kAXMinimizedAttribute, kCFBooleanFalse)
-                win.perform(kAXRaiseAction, timeout: 0.5)
-                owner?.activate(options: [])
-                return "restored \(title)"
-            }
-        case "move":
-            var p = CGPoint(x: numbers[0], y: numbers[1])
-            guard let v = AXValueCreate(.cgPoint, &p) else { throw Fail(message: "bad position") }
-            try set(kAXPositionAttribute, v)
-            pause(80)
-            let kept = frame(win).map { abs($0.minX - numbers[0]) > 2 || abs($0.minY - numbers[1]) > 2 } ?? false
-            return "moved \(title)" + where_() + (kept ? " — not exactly there: macOS keeps windows below the menu bar and on screen" : "")
-        case "resize":
-            var size = CGSize(width: numbers[0], height: numbers[1])
-            guard let v = AXValueCreate(.cgSize, &size) else { throw Fail(message: "bad size") }
-            try set(kAXSizeAttribute, v)
-            pause(80)
-            let kept = frame(win).map { abs($0.width - numbers[0]) > 2 || abs($0.height - numbers[1]) > 2 } ?? false
-            return "resized \(title)" + where_() + (kept ? " — the app didn't take that size (a zoomed window, or its own limits)" : "")
-        case "maximize", "maximise":
-            // Not the green button: on current macOS that means full screen. Fill the
-            // screen's usable area (below the menu bar, beside the Dock) instead.
-            guard let screen = NSScreen.main else { throw Fail(message: "no screen") }
-            let visible = screen.visibleFrame, full = CGDisplayBounds(CGMainDisplayID())
-            var origin = CGPoint(x: visible.minX, y: full.height - visible.maxY)      // AppKit is bottom-up, accessibility top-down
-            var size = CGSize(width: visible.width, height: visible.height)
-            guard let pv = AXValueCreate(.cgPoint, &origin), let sv = AXValueCreate(.cgSize, &size) else { throw Fail(message: "bad frame") }
-            try set(kAXPositionAttribute, pv)
-            try set(kAXSizeAttribute, sv)
-            pause(80)
-            return "maximized \(title)" + where_()
-        case "close":
-            return try acting {
-                // Cmd+W on the window brought to the front is what every app honours;
-                // pressing the red button through accessibility is only the fallback
-                // (TextEdit ignores it). Done when the window is gone or a sheet asks
-                // about saving — the sheet is a window of its own, not a child.
-                let pid = owner?.processIdentifier ?? 0
-                func settled() -> Bool {
-                    let ax = AXUIElementCreateApplication(pid)
-                    AXUIElementSetMessagingTimeout(ax, 0.3)
-                    let gone = !realWindows(ax).contains { CFEqual($0, win) }
-                    let asking = ax.element(kAXFocusedWindowAttribute)?.role == "Sheet" || win.children.contains { $0.role == "Sheet" }
-                    return gone || asking
-                }
-                owner?.activate(options: [.activateAllWindows])
-                win.perform(kAXRaiseAction, timeout: 0.5)
-                _ = until(1.5) { NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }
-                try hotkey("cmd", "w")
-                if !until(1, settled), let b = win.element(kAXCloseButtonAttribute) {
-                    b.perform(kAXPressAction, timeout: 0.5)
-                    _ = until(1, settled)
-                }
-                return "closed \(title)"
-            }
-        case "fullscreen":
-            let on = (win.attr("AXFullScreen") as? Bool) ?? false
-            return try acting {
-                try set("AXFullScreen", on ? kCFBooleanFalse : kCFBooleanTrue)
-                // The animation takes a second or two; the next step needs it finished.
-                _ = until(4) { (win.attr("AXFullScreen") as? Bool) == !on && frame(win) != nil }
-                pause(400)
-                return "\(on ? "left" : "entered") full screen: \(title)" + where_()
-            }
-        default:
-            throw Fail(message: "unknown window action: \(action) — minimize, restore, close, maximize, fullscreen, move X Y, resize W H", code: 2)
-        }
-
-    case "raise":
-        try requireTrust("raise")
-        guard let wanted = a.first?.lowercased(), !wanted.isEmpty else { throw Fail(message: "raise needs (part of) a window title", code: 2) }
-        var best: (NSRunningApplication, AXUIElement, Int)? = nil
-        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
-            let ax = AXUIElementCreateApplication(app.processIdentifier)
-            AXUIElementSetMessagingTimeout(ax, 0.5)
-            for w in (ax.attr(kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
-                let t = w.text(kAXTitleAttribute).lowercased()
-                let r = t == wanted ? 0 : t.hasPrefix(wanted) ? 1 : t.contains(wanted) ? 2 : -1
-                if r >= 0 && (best == nil || r < best!.2) { best = (app, w, r) }
-            }
-        }
-        guard let (app, win, _) = best else { throw Fail(message: "no window titled like: \(a[0])") }
-        if let front = focusedApp()?.element(kAXFocusedWindowAttribute), CFEqual(front, win),
-           NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
-            return "\"\(win.text(kAXTitleAttribute))\" is already in front"
-        }
-        return try acting {
-            if (win.attr(kAXMinimizedAttribute) as? Bool) == true {
-                AXUIElementSetAttributeValue(win, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
-            }
-            win.perform(kAXRaiseAction, timeout: 0.5)
-            app.activate(options: [])
-            _ = until(2) { NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier }
-            return "raised \"\(win.text(kAXTitleAttribute))\" of \(app.localizedName ?? "?")"
-        }
-
-    case "where":
-        guard let needle = a.first, !needle.isEmpty else { throw Fail(message: "where needs the text to look for", code: 2) }
-        let hits = rank(try frontTree(), needle)
-        guard !hits.isEmpty else { throw Fail(message: "no element matching: \(needle)") }
-        return dedupe(hits.map(line)).prefix(50).joined(separator: "\n")
-
-    case "waitfor":
-        guard let needle = a.first, !needle.isEmpty else { throw Fail(message: "waitfor needs the text to look for", code: 2) }
-        let secs = a.count > 1 ? try number(a[1], "seconds") : 10
-        let deadline = now() + secs
-        while true {
-            if let hits = try? rank(frontTree(), needle), !hits.isEmpty { return dedupe(hits.map(line)).prefix(10).joined(separator: "\n") }
-            if now() >= deadline { throw Fail(message: "not found after \(Int(secs))s: \(needle)") }
-            // Wake on the app's own notifications rather than a fixed poll.
-            Watch().settle(first: 300, quiet: 40, max: 600)
-        }
-
-    case "ui":
-        var nodes = try frontTree(visibleOnly: !a.contains("--all"))
-        if a.contains("--page") { nodes = nodes.filter { $0.inWeb } }            // the page, without the browser around it
-        let lines = dedupe(nodes.map(line))
-        guard !lines.isEmpty else { throw Fail(message: "no named elements in the front window") }
-        return lines.count > 200 ? (lines.prefix(200) + ["… \(lines.count - 200) more — narrow it with: where <text>"]).joined(separator: "\n")
-                                 : lines.joined(separator: "\n")
-
-    case "read":
-        let nodes = try frontTree(visibleOnly: !a.contains("--all"))
-        let source = nodes.contains { $0.inWeb } ? nodes.filter { $0.inWeb } : nodes
-        var lines: [String] = []
-        for n in source {
-            let t: String
-            if let v = n.value { t = "\(flat(n.name)): \"\(v)\"" }            // Name: "Grace Hopper"
-            else if let on = n.on { t = "\(flat(n.name)): \(on ? "on" : "off")" }
-            else if n.role == "TextArea" && n.value == nil { t = "document: \"\(String(flat(n.name).prefix(400)))\"" }   // a text area with no label is the document itself
-            else if textRoles.contains(n.role) || inputRoles.contains(n.role) { t = flat(n.name) }
-            else { continue }
-            if !t.isEmpty && lines.last != t { lines.append(t) }
-        }
-        guard !lines.isEmpty else { throw Fail(message: "no readable text in the front window") }
-        return lines.count > 400 ? (lines.prefix(400) + ["… \(lines.count - 400) more lines"]).joined(separator: "\n")
-                                 : lines.joined(separator: "\n")
-
-    case "apps":
-        return NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
-            .compactMap { $0.localizedName }.sorted().joined(separator: "\n")
-
-    case "menus":
-        guard let name = a.first, let app = runningApp(name) else { throw Fail(message: "no running application named: \(a.first ?? "")") }
-        let ax = AXUIElementCreateApplication(app.processIdentifier)
-        guard let bar = ax.element(kAXMenuBarAttribute) else { throw Fail(message: "\(name) has no menu bar") }
-        // menus TextEdit → the menu bar; menus TextEdit Format Font → that submenu's items.
-        var container = bar
-        for (i, title) in a.dropFirst().enumerated() {
-            let items = i == 0 ? bar.children : menuItems(container)
-            guard let item = items.first(where: { $0.text(kAXTitleAttribute).lowercased() == title.lowercased() })
-                    ?? items.first(where: { $0.text(kAXTitleAttribute).lowercased().hasPrefix(title.lowercased()) }) else {
-                throw Fail(message: "no menu \"\(title)\" — there is: \(items.map { $0.text(kAXTitleAttribute) }.filter { !$0.isEmpty }.joined(separator: ", "))")
-            }
-            container = item
-        }
-        if a.count == 1 { return bar.children.map { $0.text(kAXTitleAttribute) }.filter { !$0.isEmpty }.joined(separator: "\n") }
-        return menuItems(container).compactMap { item -> String? in
-            let t = item.text(kAXTitleAttribute)
-            if t.isEmpty { return nil }                    // separators
-            var line = t
-            if item.children.contains(where: { $0.role == "Menu" }) { line += "  ▸" }
-            if (item.attr(kAXEnabledAttribute) as? Bool) == false { line += "  (disabled)" }
-            if let mark = item.attr("AXMenuItemMarkChar") as? String, !mark.isEmpty { line += "  (checked)" }
-            return line
-        }.joined(separator: "\n")
-
-    case "click", "dclick", "rclick":
-        try requireTrust(cmd)
-        let count = cmd == "dclick" ? 2 : 1
-        let button: CGMouseButton = cmd == "rclick" ? .right : .left
-        var coords = a
-        if a.count == 1, let m = a[0].range(of: #"^-?\d+(\.\d+)?\s+-?\d+(\.\d+)?$"#, options: .regularExpression) {
-            coords = a[0][m].split(whereSeparator: { $0.isWhitespace }).map(String.init)
-        }
-        if coords.count == 2, Double(coords[0]) != nil {
-            let p = try point(coords, 0)
-            return try acting { click(p, button: button, count: count); return "" }
-        }
-        guard let needle = a.first else { throw Fail(message: "\(cmd) needs X Y or a name", code: 2) }
-        let target = try pick(needle)
-        if !target.reachable {
-            // Never click a point that would land on something else.
-            guard cmd == "click" else {
-                throw Fail(message: "\(label(target)) is covered or off screen — a \(cmd) there would hit something else")
-            }
-            return try acting {
-                target.el.perform(kAXPressAction, timeout: 0.3)
-                return "pressed \(label(target)) through accessibility — it's covered or off screen, a click there would hit something else"
-            }
-        }
-        return try acting {
-            click(target.point!, button: button, count: count)
-            return "\(cmd)ed \(label(target)) at \(Int(target.point!.x)) \(Int(target.point!.y))"
-        }
-
-    case "press":
-        try requireTrust("press")
-        guard let needle = a.first else { throw Fail(message: "press needs a name", code: 2) }
-        let target = try pick(needle, needPoint: false)
-        return try acting {
-            let r = target.el.perform(kAXPressAction, timeout: 0.3)
-            if r != .success && r != .cannotComplete { throw Fail(message: "\(label(target)) can't be pressed (\(r.rawValue)) — try click") }
-            return "pressed \(label(target))"
-        }
-
-    case "select":
-        try requireTrust("select")
-        guard a.count == 2 else { throw Fail(message: "select needs a menu and an option: select \"Country\" \"Italy\"", code: 2) }
-        let popup = try pick(a[0], roles: ["PopUpButton", "ComboBox", "MenuButton"], needPoint: false)
-        return try acting { try choose(popup, a[1]) }
-
-    case "waitgone":
-        guard let needle = a.first, !needle.isEmpty else { throw Fail(message: "waitgone needs the text that should disappear", code: 2) }
-        let secs = a.count > 1 ? try number(a[1], "seconds") : 10
-        let deadline = now() + secs
-        try requireUnlocked()
-        while true {
-            // No window at all means it isn't there either.
-            let hits = rank((try? frontTree()) ?? [], needle)
-            if hits.isEmpty { return "gone: \(needle)" }
-            if now() >= deadline { throw Fail(message: "still there after \(Int(secs))s: \(label(hits[0]))") }
-            Watch().settle(first: 300, quiet: 40, max: 600)
-        }
-
-    case "fill":
-        try requireTrust("fill")
-        guard a.count == 2 else { throw Fail(message: "fill needs a field name and the text: fill \"Email\" \"me@example.com\"", code: 2) }
-        let field = try pick(a[0], fields: true)
-        let want = a[1]
-        // Letters and digits only: a field may format what it gets ("333 1234").
-        let norm = { (s: String) in s.lowercased().filter { $0.isLetter || $0.isNumber } }
-        let holds = { norm(field.el.text(kAXValueAttribute)) == norm(want) }
-        return try acting {
-            // Focus it like a person, select what's there, paste: the page gets
-            // real input events, not a value set behind its back.
-            func put() throws {
-                if field.reachable { click(field.point!) }
-                else { AXUIElementSetAttributeValue(field.el, kAXFocusedAttribute as CFString, kCFBooleanTrue) }
-                pause(60)
-                try hotkey("cmd", "a")
-                paste(want)
-            }
-            try put()
-            if field.role == "SecureTextField" { return "filled \(label(field))" }
-            // Safari's AutoFill can swallow the first paste into a contact field
-            // (the text stays a preview and is dropped). Filling again with the
-            // same text is harmless, so check and do it once more.
-            if !until(0.8, holds) {
-                try put()
-                if !until(0.8, holds) {
-                    return "filled \(label(field)) — but it shows \"\(String(flat(field.el.text(kAXValueAttribute)).prefix(60)))\""
-                }
-                return "filled \(label(field)) (second try: the first didn't stick)"
-            }
-            return "filled \(label(field))"
-        }
-
-    case "type":
-        try requireTrust("type")
-        return try acting { paste(a.first ?? ""); return "" }
-
-    case "keys":
-        try requireTrust("keys")
-        return try acting { typeKeys(a.first ?? ""); return "" }
-
-    case "key":
-        try requireTrust("key")
-        guard let name = a.first, let code = namedKeys[name.lowercased()] else {
-            throw Fail(message: "unknown key: \(a.first ?? "") — keys: \(namedKeys.keys.sorted().joined(separator: " "))", code: 2)
-        }
-        return try acting { tap(code); return "" }
-
-    case "hotkey":
-        try requireTrust("hotkey")
-        return try acting { try hotkey(a[safe: 0] ?? "", a[safe: 1] ?? ""); return "" }
-
-    case "menu":
-        try requireTrust("menu")
-        guard let app = a.first else { throw Fail(message: "menu needs an app, a menu and an item", code: 2) }
-        return try acting { try clickMenu(app, Array(a.dropFirst())) }
-
-    case "focus":
-        guard let app = a.first else { throw Fail(message: "focus needs an app name", code: 2) }
-        try activate(app)
-        let hasWindow = focusedApp()?.element(kAXFocusedWindowAttribute) != nil
-        return hasWindow ? "focused \(app)" : "focused \(app) — it has no window open"
-
-    case "open":
-        guard let url = a.first, url.hasPrefix("http://") || url.hasPrefix("https://") else {
-            throw Fail(message: "open takes http(s) URLs only", code: 2)
-        }
-        return try acting {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            p.arguments = a.count > 1 ? ["-a", a[1], url] : [url]
-            try p.run()
-            p.waitUntilExit()
-            if p.terminationStatus != 0 { throw Fail(message: "could not open \(url)") }
-            // The browser decides between a new tab and a new window; the report says which.
-            return "opened \(url)"
-        }
-
-    case "upload":
-        guard let file = a.first else { throw Fail(message: "upload needs a file path", code: 2) }
-        let full = (file as NSString).expandingTildeInPath
-        let abs = full.hasPrefix("/") ? full : FileManager.default.currentDirectoryPath + "/" + full
-        guard FileManager.default.fileExists(atPath: abs) else { throw Fail(message: "no such file: \(file)") }
-        return try acting { try upload((abs as NSString).standardizingPath) }
-
-    case "hover":
-        try requireTrust("hover")
-        if a.count == 2, Double(a[0]) != nil {
-            let p = try point(a, 0)
-            return try acting { glide(to: p); return "hovering at \(Int(p.x)) \(Int(p.y))" }
-        }
-        guard let needle = a.first else { throw Fail(message: "hover needs X Y or a name", code: 2) }
-        let target = try pick(needle)
-        guard target.reachable else { throw Fail(message: "\(label(target)) is covered or off screen — nothing to hover") }
-        let report = try acting { glide(to: target.point!); return "hovering over \(label(target))" }
-        // Most things don't react to a pointer resting on them; that isn't a failure.
-        return report.replacingOccurrences(of: " → no reaction seen — confirm with read (or shot) before building on it", with: "")
-
-    case "move":
-        try requireTrust("move")
-        let p = try point(a, 0)
-        glide(to: p)
-        return ""
-
-    case "drag":
-        try requireTrust("drag")
-        // drag X1 Y1 X2 Y2 · drag <name> <name> · either end may be "X Y" in one argument
-        if a.count == 4, a.allSatisfy({ Double($0) != nil }) {
-            let from = try point(a, 0), to = try point(a, 2)
-            return try acting { drag(from, to); return "dragged \(Int(from.x)) \(Int(from.y)) → \(Int(to.x)) \(Int(to.y))" }
-        }
-        guard a.count == 2 else { throw Fail(message: "drag takes X1 Y1 X2 Y2, or two names: drag \"report.pdf\" \"Archive\"", code: 2) }
-        func end(_ arg: String) throws -> (CGPoint, String, Node?) {
-            let parts = arg.split(whereSeparator: { $0.isWhitespace })
-            if parts.count == 2, let x = Double(parts[0]), let y = Double(parts[1]) { return (CGPoint(x: x, y: y), "\(Int(x)) \(Int(y))", nil) }
-            let node = try pick(arg)
-            guard node.reachable else { throw Fail(message: "\(label(node)) is covered or off screen — scroll it into view to drag") }
-            return (node.point!, label(node), node)
-        }
-        let (from, fromLabel, source) = try end(a[0])
-        let (to, toLabel, _) = try end(a[1])
-        let head = try acting { drag(from, to); return "dragged \(fromLabel) onto \(toLabel)" }
-        // Did it leave? An element with the same name still in the same spot means the drop didn't take.
-        guard let moved = source else { return head }
-        let still = (try? frontTree())?.contains { $0.name == moved.name && $0.role == moved.role && $0.point == moved.point } ?? false
-        return head + (still ? " · \"\(moved.name)\" is still where it was" : " · \"\(moved.name)\" is no longer where it was")
-
-    case "scroll":
-        try requireTrust("scroll")
-        let dy = Int32(try number(a.first, "lines")), dx = Int32(a.count > 1 ? try number(a[1], "dx") : 0)
-        return try acting {
-            // The wheel scrolls whatever is under the pointer: bring it over the front window first.
-            if let win = focusedApp()?.element(kAXFocusedWindowAttribute), let f = frame(win), !f.contains(pointer()) {
-                glide(to: CGPoint(x: f.midX, y: f.midY))
-                pause(30)
-            }
-            CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0)?.post(tap: .cghidEventTap)
-            postedEvents = true
-            return ""
-        }
-
-    case "check":
-        var lines: [String] = []
-        let held = CGEventSource.flagsState(.combinedSessionState)
-        let stuck = [(CGEventFlags.maskCommand, "Cmd"), (.maskShift, "Shift"), (.maskAlternate, "Option"), (.maskControl, "Ctrl")]
-            .filter { held.contains($0.0) }.map { $0.1 }
-        if screenLocked() { lines.append("screen            LOCKED — unlock it, then run check again") }
-        let screen = CGPreflightScreenCaptureAccess()
-        lines.append("screen recording  " + (screen ? "ok" : "MISSING — System Settings > Privacy & Security > Screen Recording"))
-        // Posted events can be dropped without a word, so measure one.
-        let before = pointer()
-        post(.mouseMoved, CGPoint(x: before.x + 1, y: before.y))
-        pause(60)
-        let moved = pointer().x != before.x
-        post(.mouseMoved, before)
-        lines.append("modifier keys     " + (stuck.isEmpty ? "none held"
-            : "\(stuck.joined(separator: "+")) held — if nobody is pressing it, press and release it once, or every click becomes a \(stuck[0])-click"))
-        lines.append("accessibility     " + (AXIsProcessTrusted() && moved ? "ok"
-            : "MISSING — clicks, keys and reading the screen will fail;\n                  System Settings > Privacy & Security > Accessibility, add your terminal app, restart it"))
-        return lines.joined(separator: "\n")
-
-    case "do":
-        var lines: [String] = []
-        // do - : one step per line from stdin; blank lines and # comments skipped.
-        var steps = a
-        if a == ["-"] {
-            let input = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            steps = input.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-        }
-        let a = steps
-        for (i, step) in a.enumerated() {
-            let words = try tokenize(step)
-            guard let first = words.first, first != "do" else { continue }
-            do {
-                let started = now()
-                let result = try execute(words)
-                let took = Int((now() - started) * 1000)
-                lines.append("[\(i + 1)] \(step)  (\(took) ms)" + (result.isEmpty ? "" : "\n    " + result.replacingOccurrences(of: "\n", with: "\n    ")))
-            } catch let f as Fail {
-                lines.append("[\(i + 1)] \(step)\n    FAILED: \(f.message)")
-                say(lines.joined(separator: "\n"))
-                throw Fail(message: "stopped at step \(i + 1) of \(a.count)", code: f.code)
-            }
-        }
-        return lines.joined(separator: "\n")
-
-    default:
-        throw Fail(message: "unknown command: \(cmd)\n\n\(usage)")
-    }
-}
-
-func dedupe(_ lines: [String]) -> [String] {
-    var out: [String] = []
-    for l in lines where out.last != l { out.append(l) }
-    return out
-}
-
-/// Shell-style words: "double" and 'single' quotes, backslash escapes.
-func tokenize(_ s: String) throws -> [String] {
-    var words: [String] = [], cur = "", quote: Character? = nil, escaped = false, has = false
-    for ch in s {
-        if escaped { cur.append(ch); escaped = false; continue }
-        if ch == "\\" && quote != "'" { escaped = true; continue }
-        if let q = quote {
-            if ch == q { quote = nil } else { cur.append(ch) }
-            continue
-        }
-        if ch == "\"" || ch == "'" { quote = ch; has = true; continue }
-        if ch == " " || ch == "\t" {
-            if has || !cur.isEmpty { words.append(cur); cur = ""; has = false }
-            continue
-        }
-        cur.append(ch)
-    }
-    if quote != nil { throw Fail(message: "unclosed quote in: \(s)", code: 2) }
-    if has || !cur.isEmpty { words.append(cur) }
-    return words
-}
-
-// MARK: - Main
-
-func finish(_ code: Int32) -> Never {
-    if postedEvents { pause(25) }                     // let the window server take delivery
-    exit(code)
-}
-
-do {
-    let result = try execute(Array(CommandLine.arguments.dropFirst()))
-    if !result.isEmpty { say(result) }
-    finish(0)
-} catch let f as Fail {
-    warn(f.message)
-    finish(f.code)
-} catch {
-    warn("\(error)")
-    finish(1)
-}

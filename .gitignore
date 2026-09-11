@@ -2,5 +2,5 @@
 *.png
 !docs/*.gif
 .memsearch/
-scripts/macuse
-scripts/macuse.*.log
+scripts/anybrowser
+scripts/anybrowser.*.log

@@ -1,13 +1,13 @@
 ---
-name: macuse
+name: anybrowser
 description: Control the macOS desktop — see the screen and click, type, and drive any native app (Finder, Preview, Xcode, Blender, System Settings, installers). Use when the task needs an app that has no CLI or API, when you must read what is actually on screen, or when the user says "click", "open that app", "fill this window", "take a screenshot". On web pages, use it where a browser extension gets stuck — a native file picker, a JavaScript alert, a field that ignores scripted input, a browser other than Chrome — not as the first choice when a browser tool is available, and not for anything a shell command already does well.
 ---
 
-# macuse
+# anybrowser
 
 Eyes and hands for the macOS desktop, for the apps that have no CLI.
 
-Run everything through `scripts/mac.sh` (the first call builds a native binary,
+Run everything through `scripts/anybrowser.sh` (the first call builds a native binary,
 ~20 s). Coordinates are logical points: a pixel read off `shot` is the point
 `click` takes.
 
@@ -21,7 +21,7 @@ met, so you don't rediscover them:
 ## Before the first run
 
 ```
-scripts/mac.sh check
+scripts/anybrowser.sh check
 ```
 
 Accessibility is required for everything; Screen Recording only for `shot`.
@@ -32,7 +32,7 @@ Accessibility is required for everything; Screen Recording only for `shot`.
 Actions wait for the app to react and report the change on the same line:
 
 ```
-$ mac.sh click "Upload file"
+$ anybrowser.sh click "Upload file"
 clicked Upload file  [StaticText] at 96 439 → window: "" (sheet, file dialog) · focus: [List] in "column view"
 ```
 
@@ -65,12 +65,12 @@ Each tool call costs you seconds; each step inside `do` costs milliseconds.
 When you know the next few steps, send them together:
 
 ```
-scripts/mac.sh do 'fill Email "ada@example.com"' 'fill Password "…"' 'click "Sign in"' 'waitfor Dashboard 15'
+scripts/anybrowser.sh do 'fill Email "ada@example.com"' 'fill Password "…"' 'click "Sign in"' 'waitfor Dashboard 15'
 ```
 
 `do` stops at the first failing step and says which, with each step's time.
-For a long flow, one step per line on stdin: `mac.sh do - <<'EOF' … EOF`.
-Elements looked up by name are waited for (2 s, `MACUSE_WAIT`), and clicks right
+For a long flow, one step per line on stdin: `anybrowser.sh do - <<'EOF' … EOF`.
+Elements looked up by name are waited for (2 s, `ANYBROWSER_WAIT`), and clicks right
 after a dialog appears are held back the half second browsers ignore input for —
 so no `sleep` between steps.
 
@@ -116,7 +116,7 @@ events, so pages that ignore scripted values see a person. For the system file
 picker: `click` the page's upload control or its label, then `upload ~/file.png` — it checks
 the dialog is really open first. The first read of a freshly launched Chrome
 takes ~3 s; so does the first read of an Electron app (VS Code, Slack, Notion,
-Claude desktop), which macuse wakes the same way.
+Claude desktop), which anybrowser wakes the same way.
 
 ## Closing without saving
 
@@ -130,7 +130,7 @@ asked for; otherwise ask before choosing it. The report ends
 ## Files in Finder
 
 ```
-mac.sh do 'click "draft.txt"' 'key return' 'hotkey cmd a' 'type "final.txt"' 'key return' \
+anybrowser.sh do 'click "draft.txt"' 'key return' 'hotkey cmd a' 'type "final.txt"' 'key return' \
           'menu Finder File "New Folder"' 'type Archive' 'key return' \
           'drag final.txt Archive'
 ```
@@ -149,7 +149,7 @@ character.
 ## A whole task
 
 ```
-$ mac.sh do 'menu TextEdit File New' 'type "Hello — città"' 'menu TextEdit Edit "Select All"' \
+$ anybrowser.sh do 'menu TextEdit File New' 'type "Hello — città"' 'menu TextEdit Edit "Select All"' \
             'menu TextEdit Format Font Bold' 'where bold' 'read'
 [1] menu TextEdit File New  (588 ms)
     chose File > New → new window: "Untitled 7" · focus: [TextArea] in "Untitled 7"
@@ -192,5 +192,5 @@ WINDOW window minimize|restore|maximize|fullscreen|close [title] · window move 
 CHAIN  do "<cmd>" "<cmd>" ...  ·  do -   (steps from stdin)
 ```
 
-Environment: `MACUSE_SETTLE=0` skips the reaction wait and report; `MACUSE_GLIDE=0`
-makes the pointer jump instead of travel; `MACUSE_WAIT` is the lookup wait in seconds.
+Environment: `ANYBROWSER_SETTLE=0` skips the reaction wait and report; `ANYBROWSER_GLIDE=0`
+makes the pointer jump instead of travel; `ANYBROWSER_WAIT` is the lookup wait in seconds.

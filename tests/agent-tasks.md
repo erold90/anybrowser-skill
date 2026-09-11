@@ -1,9 +1,9 @@
 # Agent tasks
 
-The tests in this folder check that macuse works. These check that an agent can
+The tests in this folder check that anybrowser works. These check that an agent can
 *use* it: give a fresh agent only `SKILL.md` and one of these tasks, and ask for
 a report on every step, every command, and every place the docs or a report
-misled it. Each round of fixes to macuse so far came from these reports.
+misled it. Each round of fixes to anybrowser so far came from these reports.
 
 Measure: steps completed, number of tool calls, and the list of frictions.
 Adapt names to your system language.
@@ -11,7 +11,7 @@ Adapt names to your system language.
 ## 1. A document (TextEdit)
 
 1. Create a new TextEdit document (don't touch documents already open).
-2. Type: `Hello from macuse — città, perché, €5`
+2. Type: `Hello from anybrowser — città, perché, €5`
 3. Select all and make it bold with the menus (not a shortcut).
 4. Verify the document holds exactly that text, and that it's bold.
 5. Close only that document, without saving.

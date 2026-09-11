@@ -1,6 +1,6 @@
 name: build
 
-# The engine is one Swift file. Compile it on Apple Silicon runners and run the
+# The engine is a few Swift files. Compile it on Apple Silicon runners and run the
 # commands that need no Accessibility permission (CI runners have none).
 on:
   push:
@@ -18,13 +18,14 @@ jobs:
       - name: Compile
         run: |
           swiftc --version
-          swiftc -O scripts/macuse.swift -o scripts/macuse
-          file scripts/macuse
+          swiftc -O scripts/src/*.swift -o scripts/anybrowser
+          file scripts/anybrowser
       - name: Commands that need no permission
         run: |
-          scripts/macuse version
-          scripts/macuse help | head -5
-          scripts/macuse apps
-          ! scripts/macuse open file:///etc/hosts
-          ! scripts/macuse shot ../x
-          printf 'pos\n' | scripts/macuse do - || true
+          scripts/anybrowser version
+          scripts/anybrowser help | head -5
+          scripts/anybrowser apps
+          ! scripts/anybrowser open file:///etc/hosts
+          ! scripts/anybrowser go javascript:alert(1)
+          ! scripts/anybrowser shot ../x
+          printf 'pos\n' | scripts/anybrowser do - || true

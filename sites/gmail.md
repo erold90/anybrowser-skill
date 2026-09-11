@@ -25,15 +25,15 @@ with `where` before relying on them.
 
 **Send an email**
 ```
-mac.sh do 'click Scrivi' 'fill "Destinatari diretti" "someone@example.com"' \
+anybrowser.sh do 'click Scrivi' 'fill "Destinatari diretti" "someone@example.com"' \
           'fill Oggetto "Subject"' 'fill "Corpo del messaggio" "Text"'
-mac.sh shot --window          # check the recipient chip before sending — see below
-mac.sh do 'hotkey cmd return' 'waitfor "Messaggio inviato" 5'
+anybrowser.sh shot --window          # check the recipient chip before sending — see below
+anybrowser.sh do 'hotkey cmd return' 'waitfor "Messaggio inviato" 5'
 ```
 
 **Find and read a message**
 ```
-mac.sh do 'fill "Cerca nella posta" "subject:(Invoice March)"' 'key return' \
+anybrowser.sh do 'fill "Cerca nella posta" "subject:(Invoice March)"' 'key return' \
           'waitfor "Invoice March" 8' 'click "Invoice March"' 'read'
 ```
 The message text comes after the sidebar and the toolbar in `read`; the sender
@@ -41,7 +41,7 @@ and date sit just above it (`<name> <address>`, `11 set 2026, 18:25`).
 
 **Reply**
 ```
-mac.sh do 'click Rispondi' 'fill "Corpo del messaggio" "Thanks!"' 'hotkey cmd return' \
+anybrowser.sh do 'click Rispondi' 'fill "Corpo del messaggio" "Thanks!"' 'hotkey cmd return' \
           'waitfor "Messaggio inviato" 5'
 ```
 
@@ -53,7 +53,7 @@ opens it in a new tab in front; the report says `new tab: "…"`. `raise` or
 
 - **Send with `hotkey cmd return`, not `click Invia`.** The button's name has
   invisible marks around `(⌘Enter)`, and the Sent folder link `Inviati` starts
-  the same way. macuse now ranks a whole first word ahead of a longer word, but the
+  the same way. anybrowser now ranks a whole first word ahead of a longer word, but the
   shortcut can't be confused with anything.
 - **The recipient becomes a chip.** After `fill "Destinatari diretti"` the report
   says `it shows ""`: the typed address turned into a chip, which accessibility

@@ -1,4 +1,4 @@
-# macuse
+# anybrowser
 
 A [Claude Code](https://claude.com/claude-code) skill that gives the agent eyes and hands
 on the macOS desktop — for the apps that have no CLI and no API.
@@ -7,19 +7,19 @@ Claude already reads your files and drives your browser. This covers the rest:
 Finder, Preview, Xcode, System Settings, installers, the native file picker,
 that one legacy app your workflow still depends on.
 
-![macuse driving TextEdit](docs/demo.gif)
+![anybrowser driving TextEdit](docs/demo.gif)
 
 ```bash
-scripts/mac.sh click "Save"                     # by name, real pointer
-scripts/mac.sh fill "Email" "ada@example.com"   # real keystrokes into a named field
-scripts/mac.sh menu TextEdit Format Font "Show Fonts"
-scripts/mac.sh upload ~/Desktop/logo.png        # the file dialog a browser can't script
-scripts/mac.sh do 'fill Name "Ada"' 'click "Show alert"' 'key return' 'click Send' 'read'
+scripts/anybrowser.sh click "Save"                     # by name, real pointer
+scripts/anybrowser.sh fill "Email" "ada@example.com"   # real keystrokes into a named field
+scripts/anybrowser.sh menu TextEdit Format Font "Show Fonts"
+scripts/anybrowser.sh upload ~/Desktop/logo.png        # the file dialog a browser can't script
+scripts/anybrowser.sh do 'fill Name "Ada"' 'click "Show alert"' 'key return' 'click Send' 'read'
 ```
 
 ## What makes it different
 
-**Every action reports what it changed.** macuse listens to the app's
+**Every action reports what it changed.** anybrowser listens to the app's
 accessibility notifications while it acts, waits for the app to settle, and
 answers on the same line:
 
@@ -34,7 +34,7 @@ hotkey cmd w → now showing "YouTube"
 An exit code of 0 only means an event was sent. The report is what tells the
 agent it landed — without a screenshot, which costs a second and ~1,700 tokens.
 Web pages don't announce their text changing, so in a browser (or an Electron
-app) macuse compares the visible page before and after: the `page:` line is the
+app) anybrowser compares the visible page before and after: the `page:` line is the
 status message, the error or the result the click produced.
 
 **A whole flow in one call.** The slow part of an agent driving a GUI isn't the
@@ -65,7 +65,7 @@ you can keep using your mouse.
 - Retina: `shot` scales to points, so a pixel read off the image is where `click` lands.
 - Permissions: without Accessibility, posted events vanish silently. `check`
   moves the pointer one point and reads it back.
-- Chromium builds a page's tree only when an assistive app asks. macuse asks —
+- Chromium builds a page's tree only when an assistive app asks. anybrowser asks —
   the way VoiceOver does for Chrome, Brave, Edge, Arc; with `AXManualAccessibility`
   for Electron and CEF apps (VS Code, Slack, Notion, Claude…) — and waits until
   the page has content. Tested cold on Chrome and on the Claude desktop app
@@ -79,13 +79,13 @@ you can keep using your mouse.
 ## Install
 
 ```bash
-git clone https://github.com/erold90/macuse.git
-cd macuse && ./install.sh
+git clone https://github.com/erold90/anybrowser.git
+cd anybrowser && ./install.sh
 ```
 
 Needs the Swift compiler from the Command Line Tools (`xcode-select --install`;
 if you have `git`, you likely have them). The installer copies the skill to
-`~/.claude/skills/macuse/`, builds the binary (~20 s) and runs `check`. Grant
+`~/.claude/skills/anybrowser/`, builds the binary (~20 s) and runs `check`. Grant
 what it reports in System Settings → Privacy & Security — Accessibility for
 everything, Screen Recording for `shot` — then restart your terminal.
 
@@ -116,10 +116,10 @@ everything, Screen Recording for `shot` — then restart your terminal.
 
 The pointer travels instead of jumping: an eased path at ~240 events a second,
 25 ms for a short hop up to ~110 ms across the screen — a click by name still
-reaches the page in under 200 ms. `MACUSE_GLIDE=0` jumps, `MACUSE_GLIDE=<ms>`
-fixes the travel time. `MACUSE_SETTLE=0` skips the wait and report (fire and
-forget), `MACUSE_WAIT` sets how long a lookup by name waits (seconds, default 2),
-`MACUSE_DEBUG=1` prints where a slow step spends its time.
+reaches the page in under 200 ms. `ANYBROWSER_GLIDE=0` jumps, `ANYBROWSER_GLIDE=<ms>`
+fixes the travel time. `ANYBROWSER_SETTLE=0` skips the wait and report (fire and
+forget), `ANYBROWSER_WAIT` sets how long a lookup by name waits (seconds, default 2),
+`ANYBROWSER_DEBUG=1` prints where a slow step spends its time.
 
 ## App playbooks
 
@@ -133,7 +133,7 @@ verified.
 ## On the web
 
 A browser extension works inside the page — it reads the DOM, runs JavaScript
-and leaves your mouse alone. Use one when you have it. macuse covers what an
+and leaves your mouse alone. Use one when you have it. anybrowser covers what an
 extension can't reach: the native file picker, JavaScript alerts, pages that
 ignore scripted values, browsers other than Chrome.
 
@@ -172,7 +172,7 @@ name, the `dialog:`/`page:`/`selected:`/`now showing` reports and most of SKILL.
 ## When something doesn't work
 
 - **Clicks and keys do nothing, silently.** Accessibility isn't granted to the
-  app that runs the agent. `scripts/mac.sh check` tells you; grant it to your
+  app that runs the agent. `scripts/anybrowser.sh check` tells you; grant it to your
   terminal (Terminal, iTerm, Ghostty…) in System Settings → Privacy & Security →
   Accessibility, then quit and reopen the terminal.
 - **`shot` is black or fails.** Same place, Screen Recording.
@@ -182,10 +182,10 @@ name, the `dialog:`/`page:`/`selected:`/`now showing` reports and most of SKILL.
   Chrome or an Electron app, the first read can take ~3 s.
 - **"no reaction seen".** The app may draw its own UI (no accessibility tree) or
   be slow to answer: `read` or `shot --window` to see what happened.
-- **Anything else:** `MACUSE_DEBUG=1 scripts/mac.sh <command>` prints where the
-  time goes; open an issue with that and `scripts/macuse version`.
+- **Anything else:** `ANYBROWSER_DEBUG=1 scripts/anybrowser.sh <command>` prints where the
+  time goes; open an issue with that and `scripts/anybrowser version`.
 
-Uninstall: `rm -rf ~/.claude/skills/macuse`.
+Uninstall: `rm -rf ~/.claude/skills/anybrowser`.
 
 ## Requirements
 

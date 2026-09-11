@@ -7,7 +7,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-M="$HERE/scripts/mac.sh"
+M="$HERE/scripts/anybrowser.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
@@ -24,7 +24,7 @@ says() { local want="$1" out; shift; out=$("$@" 2>&1); grep -q -- "$want" <<<"$o
 "$M" pos >/dev/null 2>&1   # builds the binary if needed
 
 CLAUDE_SKILLS="$TMP/skills" "$HERE/install.sh" >/dev/null 2>&1
-t "install builds a working binary" test -x "$TMP/skills/macuse/scripts/macuse" -a -f "$TMP/skills/macuse/scripts/macuse.swift"
+t "install builds a working binary" test -x "$TMP/skills/anybrowser/scripts/anybrowser" -a -f "$TMP/skills/anybrowser/scripts/src/main.swift" -a -d "$TMP/skills/anybrowser/sites"
 
 # Each payload would create a file if it were ever interpreted as code.
 "$M" menus "Finder\" to return (do shell script \"touch $TMP/p1\") --" >/dev/null 2>&1
@@ -34,6 +34,9 @@ do shell script \"touch $TMP/p2\"" >/dev/null 2>&1
 "$M" menu "NoSuchApp\" of menu bar 1 --" "File" "x\"); do shell script \"touch $TMP/p4\" --" >/dev/null 2>&1
 "$M" scroll "0, 0)); \$.system('touch $TMP/p5'); ((0" >/dev/null 2>&1
 "$M" do "keys \$(touch $TMP/p6)" "nosuchcommand" >/dev/null 2>&1
+# Browser arguments reach the browser script as values, never as its source.
+ANYBROWSER_BROWSER="zz-no-such-browser" "$M" go "x\"); Application.currentApplication().doShellScript(\"touch $TMP/p7\"); (\"" >/dev/null 2>&1
+ANYBROWSER_BROWSER="zz-no-such-browser" "$M" tab "\"); do shell script \"touch $TMP/p8\" --" >/dev/null 2>&1
 t "no argument runs as code" bash -c "! ls $TMP/p? 2>/dev/null | grep -q ."
 
 t "where exits 1 when nothing matches"  refuses "$M" where "zz-no-such-element-zz"
@@ -43,9 +46,9 @@ t "hotkey without a key fails"          refuses "$M" hotkey cmd
 t "pos prints two numbers"              bash -c "\"$M\" pos | grep -Eq '^-?[0-9]+ -?[0-9]+$'"
 # A lone pointer event used to be dropped when the process exited right after it.
 read -r X Y <<<"$("$M" pos)"
-t "move lands, jumping"                 bash -c "MACUSE_GLIDE=0 \"$M\" move $((X+9)) $((Y+7)) && [ \"\$(\"$M\" pos)\" = '$((X+9)) $((Y+7))' ]"
+t "move lands, jumping"                 bash -c "ANYBROWSER_GLIDE=0 \"$M\" move $((X+9)) $((Y+7)) && [ \"\$(\"$M\" pos)\" = '$((X+9)) $((Y+7))' ]"
 t "move lands, gliding"                 bash -c "\"$M\" move $((X+40)) $((Y+30)) && [ \"\$(\"$M\" pos)\" = '$((X+40)) $((Y+30))' ]"
-MACUSE_GLIDE=0 "$M" move "$X" "$Y" >/dev/null 2>&1
+ANYBROWSER_GLIDE=0 "$M" move "$X" "$Y" >/dev/null 2>&1
 t "fill needs a field and a text"       refuses "$M" fill Email
 t "open refuses non-web URLs"           says "http(s) URLs only" "$M" open "file:///etc/hosts"
 t "shot refuses a relative path"        refuses "$M" shot ../../x
@@ -65,9 +68,22 @@ t "window move needs two numbers"       says "needs two numbers" "$M" window mov
 t "window rejects unknown actions"      says "unknown window action" "$M" window wiggle
 t "quit says when an app isn't running" says "isn't running" "$M" quit "zz-no-such-app"
 # A shortcut used to leave Cmd "held" for the whole system: every later click became a Cmd-click.
-MACUSE_SETTLE=0 "$M" hotkey "cmd shift" f19 >/dev/null 2>&1
+ANYBROWSER_SETTLE=0 "$M" hotkey "cmd shift" f19 >/dev/null 2>&1
 t "a shortcut leaves no modifier held"  says "modifier keys     none held" "$M" check
 t "menus lists a menu's items"          bash -c "\"$M\" menus Finder \"\$(\"$M\" menus Finder | sed -n 3p)\" | grep -q ."
+
+# Browser commands: validation that needs no browser window.
+t "go refuses javascript: addresses"    says "doesn't run javascript:" "$M" go "javascript:alert(1)"
+t "go needs an address"                 says "go needs an address" "$M" go
+t "go refuses words that aren't an address" says "takes an address" "$M" go "hello world"
+t "tab needs something to do"           says "tab needs a number" "$M" tab
+t "find needs a known kind"             says "find needs a kind" "$M" find wibble
+t "use says when a browser isn't running" says "isn't running" "$M" use "zz-no-such-browser"
+t "a named browser that isn't running"  says "isn't running" env ANYBROWSER_BROWSER="zz-no-such-browser" "$M" tabs
+rm -f "${TMPDIR:-/tmp}/anybrowser-refs.json"
+t "a ref needs a listing first"         says "refs come from the last" "$M" click @3
+t "expect fails when the text is absent" says "expected" "$M" expect "zz-no-such-text-zz" 0.3
+t "shot --element needs a target"       says "needs a name or a ref" "$M" shot x --element
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
