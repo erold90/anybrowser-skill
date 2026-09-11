@@ -46,6 +46,7 @@ flow() {
     'click Send' \
     'read' 2>&1)
   echo "      $browser: whole flow in $(( $(ms) - start )) ms"
+  [ -n "${VERBOSE:-}" ] && grep -E '^\[[0-9]+\]' <<<"$out" | sed 's/^/        /'
   t "$browser: flow completes"              "status: sent name=Ada Lovelace email=ada@example.com file=logo.txt" "$out"
   t "$browser: typing is real input"        "real inputs: [1-9][0-9]* · synthetic: 0" "$out"
   t "$browser: clicks are real clicks"      "real clicks: [1-9][0-9]* · synthetic: 0" "$out"

@@ -32,6 +32,14 @@ func env(_ name: String, _ fallback: Int) -> Int {
 }
 
 func now() -> Double { CFAbsoluteTimeGetCurrent() }
+
+let launched = CFAbsoluteTimeGetCurrent()
+/// MACUSE_DEBUG=1: timestamps on stderr, to see where a slow step spends its time.
+func debug(_ s: @autoclosure () -> String) {
+    if ProcessInfo.processInfo.environment["MACUSE_DEBUG"] != nil {
+        warn(String(format: "  %6.0f ms  ", (CFAbsoluteTimeGetCurrent() - launched) * 1000) + s())
+    }
+}
 func pause(_ ms: Double) { if ms > 0 { usleep(useconds_t(ms * 1000)) } }
 
 // MARK: - Accessibility helpers
@@ -90,26 +98,29 @@ func requireTrust(_ what: String) throws {
     }
 }
 
-/// The app in front. The accessibility server knows best, but it answers
-/// "cannot complete" for some apps (Safari, measured); the window list is always
-/// current; NSWorkspace can lag inside a single run, so it comes last.
+/// The app in front. NSWorkspace answers in 0.2 ms but can be stale inside one
+/// run, so its answer is confirmed with the app's own AXFrontmost; when that says
+/// no, the on-screen window list decides (always current, ~60 ms). The
+/// accessibility server's focused-application attribute failed for every app we
+/// measured, so it is only the last resort.
 func focusedApp() -> AXUIElement? {
+    func element(_ pid: pid_t) -> AXUIElement {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 2)
+        return app
+    }
+    if let front = NSWorkspace.shared.frontmostApplication {
+        let app = element(front.processIdentifier)
+        if (app.attr(kAXFrontmostAttribute) as? Bool) != false { return app }
+    }
+    if let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
+       let top = list.first(where: { ($0[kCGWindowLayer as String] as? Int) == 0 }),
+       let owner = top[kCGWindowOwnerPID as String] as? pid_t {
+        return element(owner)
+    }
     let sys = AXUIElementCreateSystemWide()
     AXUIElementSetMessagingTimeout(sys, 0.5)
-    var pid: pid_t = 0
-    if let app = sys.element(kAXFocusedApplicationAttribute) {
-        pid = app.pid
-    } else if let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
-              let top = list.first(where: { ($0[kCGWindowLayer as String] as? Int) == 0 }),
-              let owner = top[kCGWindowOwnerPID as String] as? pid_t {
-        pid = owner
-    } else if let front = NSWorkspace.shared.frontmostApplication {
-        pid = front.processIdentifier
-    }
-    guard pid > 0 else { return nil }
-    let app = AXUIElementCreateApplication(pid)
-    AXUIElementSetMessagingTimeout(app, 2)
-    return app
+    return sys.element(kAXFocusedApplicationAttribute).map { element($0.pid) }
 }
 
 func appName(_ pid: pid_t) -> String {
@@ -469,14 +480,23 @@ func acting(_ body: () throws -> String) throws -> String {
     }
     let before = Snap.take()
     let watch = Watch()
+    debug("acting: before-snapshot taken")
     let head = try body()
+    debug("acting: action done")
     watch.settle()
+    debug("acting: settled (\(watch.events) events)")
     var after = Snap.take()
     // Something new is on screen: let it finish appearing, or the next click can
     // land while a dialog is still animating in and be silently ignored. Waiting
     // is safe; clicking again would not be.
     let windowMoved = after.pid != before.pid || after.window != before.window || after.windows != before.windows
-    if windowMoved { windowChangedAt = now() }
+    // Browsers hold back input on a dialog that just *appeared*; returning to a
+    // window that was already there needs no wait.
+    let appeared = after.windows > before.windows || (after.pid == before.pid && after.window != before.window && !after.windowKind.isEmpty)
+        || (after.pid != before.pid && !after.windowKind.isEmpty)
+    if appeared || (after.window != before.window && after.windows == before.windows && after.pid == before.pid && before.windowKind.isEmpty) {
+        windowChangedAt = now()
+    }
     if windowMoved || (after.focus != before.focus && (after.focus.hasPrefix("[Group]") || after.windowKind.contains("sheet"))) {
         pause(200)
         after = Snap.take()
@@ -652,7 +672,7 @@ func paste(_ text: String) {
     try? hotkey("cmd", "v")
     // The app reads the clipboard when it handles the keystroke; a value change
     // tells us it did. Without one, give it a moment.
-    watch.settle(first: 400, quiet: 60, max: 900) { w in
+    watch.settle(first: 250, quiet: 60, max: 900) { w in
         (w.kinds[kAXValueChangedNotification] ?? 0) + (w.kinds[kAXSelectedTextChangedNotification] ?? 0) > 0
     }
     if pb.changeCount == mine {
@@ -751,16 +771,26 @@ func upload(_ path: String) throws -> String {
     try requireTrust("upload")
     // Check the dialog is really there before typing a path into anything.
     guard let panel = openPanel() else { throw Fail(message: "no file dialog in front — click the page's upload button first") }
+    debug("upload: panel found")
     try hotkey("cmd shift", "g")                                      // Go to Folder
     let fieldRoles: Set<String> = ["TextField", "ComboBox"]
     guard until(2, { fieldRoles.contains(focusedElement()?.role ?? "") }) else {
         throw Fail(message: "Go to Folder did not open — take a shot to see why")
     }
-    try hotkey("cmd", "a")
-    paste(path)
-    _ = until(1.5) { (focusedElement()?.text(kAXValueAttribute) ?? "") == path }
+    debug("upload: Go to Folder field focused")
+    // A system panel, not a web page: set the field directly — no clipboard, no
+    // waiting for keystrokes. Paste only if the field refuses.
+    if let field = focusedElement(),
+       AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, path as CFString) != .success
+        || !until(0.3, { field.text(kAXValueAttribute) == path }) {
+        try hotkey("cmd", "a")
+        paste(path)
+        _ = until(1.5) { (focusedElement()?.text(kAXValueAttribute) ?? "") == path }
+    }
+    debug("upload: path in the field")
     tap(36)                                                            // go there: the file gets selected
     _ = until(2) { !fieldRoles.contains(focusedElement()?.role ?? "") }
+    debug("upload: Go to Folder closed")
     // The Open button turns on once the panel has selected the file.
     func okButton() -> AXUIElement? {
         (openPanel() ?? panel).children.first { $0.text(kAXIdentifierAttribute) == "OKButton" }
@@ -769,9 +799,12 @@ func upload(_ path: String) throws -> String {
         guard until(2, { (okButton()?.attr(kAXEnabledAttribute) as? Bool) == true }), let ok = okButton() else {
             throw Fail(message: "no file selected for \(path) — take a shot to see why")
         }
+        debug("upload: Open enabled")
         ok.perform(kAXPressAction, timeout: 0.3)
+        debug("upload: Open pressed")
     }
     guard until(3, { openPanel() == nil }) else { throw Fail(message: "the file dialog is still open — take a shot to see why") }
+    debug("upload: panel gone")
     return "uploaded \(path)"
 }
 
@@ -1071,8 +1104,10 @@ func execute(_ args: [String]) throws -> String {
             let words = try tokenize(step)
             guard let first = words.first, first != "do" else { continue }
             do {
+                let started = now()
                 let result = try execute(words)
-                lines.append("[\(i + 1)] \(step)" + (result.isEmpty ? "" : "\n    " + result.replacingOccurrences(of: "\n", with: "\n    ")))
+                let took = Int((now() - started) * 1000)
+                lines.append("[\(i + 1)] \(step)  (\(took) ms)" + (result.isEmpty ? "" : "\n    " + result.replacingOccurrences(of: "\n", with: "\n    ")))
             } catch let f as Fail {
                 lines.append("[\(i + 1)] \(step)\n    FAILED: \(f.message)")
                 say(lines.joined(separator: "\n"))
