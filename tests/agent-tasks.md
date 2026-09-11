@@ -16,7 +16,8 @@ Adapt names to your system language.
 4. Verify the document holds exactly that text, and that it's bold.
 5. Close only that document, without saving.
 
-History: 5/5 in 10 calls (first round).
+History: 5/5 in 10 calls (first round) → 5/5 in 4 calls, bold checked without a
+screenshot (after `menus <app> <menu>`, `read` values, on/off state).
 
 ## 2. A web form (Safari, local page)
 

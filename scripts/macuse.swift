@@ -469,6 +469,15 @@ func dialogSummary(_ container: AXUIElement) -> String? {
     return "dialog: \"\(words)\" — buttons: \(buttons.joined(separator: ", "))"
 }
 
+/// A sheet, a dialog, or a window small enough to be an alert. A document window
+/// is none of these, even though its tab bar has a few buttons and some text.
+func looksLikeDialog(_ w: AXUIElement, kind: String) -> Bool {
+    if kind.contains("file dialog") { return false }
+    if kind.contains("sheet") || kind.contains("dialog") { return true }
+    guard let size = axSize(w.attr(kAXSizeAttribute)) else { return false }
+    return size.width < 640 && size.height < 360
+}
+
 let webBundles = ["com.apple.Safari", "com.apple.SafariTechnologyPreview"] + chromium
 
 /// Browsers and Electron/CEF apps: pages whose text changes without telling anyone.
@@ -546,7 +555,15 @@ struct Snap {
                 }
                 s.focus = context.isEmpty ? "[\(role)]" : "[\(role)] in \"\(context)\""
             }
-            if inputRoles.contains(role), role != "SecureTextField" { s.value = String(flat(f.text(kAXValueAttribute)).prefix(80)) }
+            if inputRoles.contains(role), role != "SecureTextField" {
+                s.value = String(flat(f.text(kAXValueAttribute)).prefix(80))
+                var range = CFRange()
+                if let r = f.attr(kAXSelectedTextRangeAttribute), CFGetTypeID(r) == AXValueGetTypeID(),
+                   AXValueGetValue(r as! AXValue, .cfRange, &range), range.length > 0 {
+                    let picked = flat(f.text(kAXSelectedTextAttribute))
+                    s.selection = picked.count <= 40 && !picked.isEmpty ? "\"\(picked)\"" : "\(range.length) characters of text"
+                }
+            }
             if ["Outline", "Table", "List", "Browser", "Grid"].contains(role) {
                 let names = selectionNames(f)
                 if !names.isEmpty { s.selection = names.map { "\"\($0)\"" }.joined(separator: ", ") }
@@ -562,9 +579,7 @@ struct Snap {
             }
         }
         // A sheet or an alert window: say what it asks.
-        if s.dialog.isEmpty, let w = focusedWindow,
-           s.windowKind.contains("sheet") || s.windowKind.contains("dialog") || (axSize(w.attr(kAXSizeAttribute)).map { $0.width < 700 && $0.height < 500 } ?? false),
-           !s.windowKind.contains("file dialog") {
+        if s.dialog.isEmpty, let w = focusedWindow, looksLikeDialog(w, kind: s.windowKind) {
             s.dialog = dialogSummary(w) ?? ""
         }
         return s
@@ -661,7 +676,7 @@ func acting(_ body: () throws -> String) throws -> String {
     // A window that just appeared may be an alert: say what it asks (a big
     // window or a page is never summarised, so this costs nothing there).
     let otherWindow = after.windowRef != nil && (before.windowRef == nil || !CFEqual(after.windowRef!, before.windowRef!))
-    if otherWindow || after.windows > before.windows, after.dialog.isEmpty, let w = after.windowRef, !after.windowKind.contains("file dialog") {
+    if otherWindow || after.windows > before.windows, after.dialog.isEmpty, let w = after.windowRef, looksLikeDialog(w, kind: after.windowKind) {
         after.dialog = dialogSummary(w) ?? ""
     }
     // A text field's value can reach the accessibility tree a beat after the edit.
@@ -1308,6 +1323,10 @@ func execute(_ args: [String]) throws -> String {
             }
         }
         guard let (app, win, _) = best else { throw Fail(message: "no window titled like: \(a[0])") }
+        if let front = focusedApp()?.element(kAXFocusedWindowAttribute), CFEqual(front, win),
+           NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
+            return "\"\(win.text(kAXTitleAttribute))\" is already in front"
+        }
         return try acting {
             if (win.attr(kAXMinimizedAttribute) as? Bool) == true {
                 AXUIElementSetAttributeValue(win, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
@@ -1351,6 +1370,7 @@ func execute(_ args: [String]) throws -> String {
             let t: String
             if let v = n.value { t = "\(flat(n.name)): \"\(v)\"" }            // Name: "Grace Hopper"
             else if let on = n.on { t = "\(flat(n.name)): \(on ? "on" : "off")" }
+            else if n.role == "TextArea" && n.value == nil { t = "document: \"\(String(flat(n.name).prefix(400)))\"" }   // a text area with no label is the document itself
             else if textRoles.contains(n.role) || inputRoles.contains(n.role) { t = flat(n.name) }
             else { continue }
             if !t.isEmpty && lines.last != t { lines.append(t) }

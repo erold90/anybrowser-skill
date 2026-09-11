@@ -86,9 +86,11 @@ elements tie, the first in the window wins: `where` shows the candidates.
 
 `click <name>` moves the real pointer. `press <name>` triggers the control
 through accessibility without touching the pointer — use it when the user is
-working on the same Mac. Names follow the system language, but not all of them
-are translated — on an Italian Mac TextEdit has `Formato`, while Finder's first
-menu is still `File`: read `menus <app>` or `ui` rather than guessing.
+working on the same Mac. Names follow the system language — menus *and* the
+labels of controls: on an Italian Mac Edit is `Modifica`, Format is `Formato`,
+the bold button is `grassetto` — but not everything is translated (Finder's first
+menu is still `File`). Read `menus <app>` or `ui` rather than guessing. `focus`
+launches an app that isn't running.
 `focus` accepts an app's bundle name too, so `focus "System Settings"` works in
 any language.
 
@@ -126,6 +128,13 @@ mac.sh do 'click "draft.txt"' 'key return' 'hotkey cmd a' 'type "final.txt"' 'ke
 Rename with `key return` on the selected item, then `hotkey cmd a` before typing:
 Finder preselects the name without its extension, so typing alone gives
 `final.txt.txt`. `read` lists the file names of the front window.
+
+## Checking formatting without a screenshot
+
+`read` also lists the state of the controls around a document for the current
+selection — `style: "Bold"`, `bold: on` — and `document: "…"` for the text
+itself. Select the text first; the controls describe the selection, not every
+character.
 
 ## A whole task
 
