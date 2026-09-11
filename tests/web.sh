@@ -61,8 +61,7 @@ flow() {
 # --- Safari -----------------------------------------------------------------
 osascript -e "tell application \"Safari\" to make new document with properties {URL:\"$URL\"}" -e 'tell application "Safari" to activate' >/dev/null
 flow Safari
-[ "$(osascript -e 'tell application "Safari" to name of front window' 2>/dev/null)" = "macuse test" ] \
-  && osascript -e 'tell application "Safari" to close front window' >/dev/null
+osascript -e 'tell application "Safari" to close (every window whose name is "macuse test")' >/dev/null 2>&1
 
 # --- Chrome, a throwaway profile starting cold --------------------------------
 if [ -d "/Applications/Google Chrome.app" ]; then

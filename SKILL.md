@@ -63,7 +63,8 @@ so no `sleep` between steps.
 | A pop-up menu or `<select>` | `select "Country" "Italy"` — checks the value, restores it on failure |
 | Wait for a spinner to go | `waitgone "Loading"` |
 | What's there | `where "Save"` (best first, with points) · `ui` · `read` |
-| Anything the tree can't see | `shot`, read it, `click X Y` |
+| Anything the tree can't see | `shot --window` (smaller than the whole screen), read it, `click X Y` |
+| Another window | `windows` · `raise "Invoice"` |
 
 `click <name>` moves the real pointer. `press <name>` triggers the control
 through accessibility without touching the pointer — use it when the user is
@@ -101,10 +102,10 @@ takes ~3 s.
 ## Commands
 
 ```
-LOOK   shot [name] · where <text> · waitfor|waitgone <text> [secs] · read|ui [--all] · apps · menus <app> · pos
+LOOK   shot [name] [--window|--region X Y W H|--display N] · windows · where <text> · waitfor|waitgone <text> [secs] · read|ui [--all] · apps · menus <app> · pos
 ACT    click|dclick|rclick X Y|<name> · press <name> · fill <field> "text" · select <menu> <option>
        type "text" · keys "text" · key <name> · hotkey "<mods>" <key>
-       menu <app> <menu> [<submenu>...] <item> · focus <app> · open <url> [app] · upload <file>
+       menu <app> <menu> [<submenu>...] <item> · focus <app> · raise <title> · open <url> [app] · upload <file>
        hover X Y|<name> · move X Y · drag X1 Y1 X2 Y2 · scroll N [dx]
 CHAIN  do "<cmd>" "<cmd>" ...  ·  do -   (steps from stdin)
 ```

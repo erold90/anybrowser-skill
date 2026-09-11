@@ -455,8 +455,9 @@ struct Snap {
         if (watch.kinds[kAXMenuOpenedNotification] ?? 0) > 0 { parts.append("menu opened") }
         // Text that changed somewhere else on screen — a status line, a counter.
         var seen = Set<String>([value])
-        // Only text a person reads as a result; not toolbars updating their font menus.
-        for el in watch.changed where ["StaticText", "Heading", "Cell", "Link", "Button"].contains(el.role) {
+        // Only text a person reads as a result; not toolbars updating their font menus,
+        // and only in the app still in front — the one we left keeps retitling its tabs.
+        for el in watch.changed where pid == b.pid && ["StaticText", "Heading", "Cell", "Link", "Button"].contains(el.role) {
             var t = el.text(kAXValueAttribute)
             if t.isEmpty { t = el.text(kAXTitleAttribute) }
             t = String(flat(t).prefix(80))
@@ -808,7 +809,12 @@ func focusedElement() -> AXUIElement? { focusedApp()?.element(kAXFocusedUIElemen
 /// Poll a condition every 30 ms; true if it held before the deadline.
 func until(_ seconds: Double, _ condition: () -> Bool) -> Bool {
     let deadline = now() + seconds
-    repeat { if condition() { return true }; pause(30) } while now() < deadline
+    repeat {
+        if condition() { return true }
+        // Spin the run loop while waiting, so activations and accessibility
+        // notifications land; with nothing to serve it returns at once, so sleep.
+        if CFRunLoopRunInMode(.defaultMode, 0.03, false) == .finished { pause(30) }
+    } while now() < deadline
     return false
 }
 
@@ -941,15 +947,34 @@ func choose(_ popup: Node, _ option: String) throws -> String {
 
 // MARK: - Screenshot
 
-func shot(_ name: String) throws -> String {
+/// Capture the screen, a window or a region, scaled so one pixel is one point.
+/// A capture that doesn't start at 0,0 says where it starts: add that origin to a
+/// pixel's coordinates to get the point to click.
+func shot(_ name: String, region: CGRect? = nil, display: Int? = nil) throws -> String {
     try requireUnlocked()
     guard !name.contains("/"), !name.hasPrefix(".") else { throw Fail(message: "shot name must be a plain file name", code: 2) }
     let dir = ProcessInfo.processInfo.environment["MACUSE_SHOTS"] ?? NSTemporaryDirectory()
     let raw = (dir as NSString).appendingPathComponent("\(name)_raw.png")
     let out = (dir as NSString).appendingPathComponent("\(name).png")
+
+    var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+    var count: UInt32 = 0
+    CGGetActiveDisplayList(16, &ids, &count)
+    var area = CGDisplayBounds(CGMainDisplayID())
+    var arguments = ["-x", "-t", "png"]
+    if let r = region {
+        area = r.integral
+        arguments += ["-R", "\(Int(area.minX)),\(Int(area.minY)),\(Int(area.width)),\(Int(area.height))"]
+    } else if let d = display {
+        guard d >= 1 && d <= Int(count) else { throw Fail(message: count == 1 ? "there is one display: --display 1" : "there are \(count) displays: --display 1…\(count)", code: 2) }
+        area = CGDisplayBounds(ids[d - 1])
+        arguments += ["-D", "\(d)"]
+    } else {
+        arguments += ["-m"]
+    }
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-    p.arguments = ["-x", "-m", "-t", "png", raw]
+    p.arguments = arguments + [raw]
     try p.run()
     p.waitUntilExit()
     defer { try? FileManager.default.removeItem(atPath: raw) }
@@ -957,11 +982,10 @@ func shot(_ name: String) throws -> String {
           let image = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
         throw Fail(message: "screenshot failed — grant Screen Recording (macuse check)")
     }
-    // Retina captures at 2x: scale to the display's width in points, so one
-    // pixel in the image is one point for the mouse.
-    let bounds = CGDisplayBounds(CGMainDisplayID())
-    let w = Int(bounds.width), h = Int(bounds.height)
-    guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+    // Retina captures at 2x: scale to the area's size in points, so one pixel in
+    // the image is one point for the mouse.
+    let w = Int(area.width), h = Int(area.height)
+    guard w > 0, h > 0, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                               space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
         throw Fail(message: "could not scale the screenshot")
     }
@@ -973,7 +997,13 @@ func shot(_ name: String) throws -> String {
     }
     CGImageDestinationAddImage(dest, scaled, nil)
     CGImageDestinationFinalize(dest)
-    return out
+    if area.origin == .zero { return out }
+    return "\(out)  (\(w)×\(h) starting at \(Int(area.minX)) \(Int(area.minY)) — add that to a pixel to get the point to click)"
+}
+
+func frame(_ el: AXUIElement) -> CGRect? {
+    guard let o = axPoint(el.attr(kAXPositionAttribute)), let s = axSize(el.attr(kAXSizeAttribute)) else { return nil }
+    return CGRect(origin: o, size: s)
 }
 
 // MARK: - Commands
@@ -982,13 +1012,14 @@ let usage = """
 macuse — eyes and hands for the macOS desktop
 
 LOOK
-  shot [name]              capture the main display, scaled so pixels = click points
+  shot [name] [--window | --region X Y W H | --display N]
+                           capture, scaled so pixels = points (origin given if not 0,0)
   where <text>             elements matching <text>, best first, with centre points
   waitfor <text> [secs]    return as soon as <text> appears (default 10 s)
   waitgone <text> [secs]   return as soon as <text> is gone
   read [--all]             the visible text in order — on a web page, the page
   ui [--all]               named elements you can see (--all: offscreen too)
-  apps · menus <app> · pos
+  apps · windows · menus <app> · pos
 
 ACT  (each one waits for the app to react and reports what changed)
   click X Y | <name>       also dclick, rclick
@@ -999,7 +1030,7 @@ ACT  (each one waits for the app to react and reports what changed)
   keys "text"              real keystrokes, any characters
   key <name> · hotkey "cmd shift" s
   menu <app> <menu> [<submenu>...] <item>
-  focus <app> · open <url> [app] · upload <file>
+  focus <app> · raise <window title> · open <url> [app] · upload <file>
   hover X Y | <name>       rest the pointer there: hover menus, tooltips
   move X Y · drag X1 Y1 X2 Y2 · scroll N [dx]
 
@@ -1032,7 +1063,63 @@ func execute(_ args: [String]) throws -> String {
         return "\(Int(p.x)) \(Int(p.y))"
 
     case "shot":
-        return try shot(a.first ?? "shot")
+        let name = a.first(where: { !$0.hasPrefix("--") && Double($0) == nil }) ?? "shot"
+        if let i = a.firstIndex(of: "--region") {
+            let x = try number(a[safe: i + 1], "x"), y = try number(a[safe: i + 2], "y")
+            let w = try number(a[safe: i + 3], "width"), h = try number(a[safe: i + 4], "height")
+            return try shot(name, region: CGRect(x: x, y: y, width: w, height: h))
+        }
+        if a.contains("--window") {
+            try requireTrust("shot --window")
+            guard let win = focusedApp()?.element(kAXFocusedWindowAttribute), let f = frame(win) else {
+                throw Fail(message: "the frontmost app has no window")
+            }
+            return try shot(name, region: f)
+        }
+        if let i = a.firstIndex(of: "--display") {
+            return try shot(name, display: Int(try number(a[safe: i + 1], "display")))
+        }
+        return try shot(name)
+
+    case "windows":
+        try requireTrust("windows")
+        var lines: [String] = []
+        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+            let ax = AXUIElementCreateApplication(app.processIdentifier)
+            AXUIElementSetMessagingTimeout(ax, 0.5)
+            for w in (ax.attr(kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
+                let title = w.text(kAXTitleAttribute)
+                guard let f = frame(w), f.width > 1 else { continue }
+                let minimized = (w.attr(kAXMinimizedAttribute) as? Bool) == true
+                lines.append("\(app.localizedName ?? "?") — \"\(title)\"  at \(Int(f.minX)) \(Int(f.minY)) size \(Int(f.width))×\(Int(f.height))" + (minimized ? "  (minimized)" : ""))
+            }
+        }
+        guard !lines.isEmpty else { throw Fail(message: "no windows") }
+        return lines.joined(separator: "\n")
+
+    case "raise":
+        try requireTrust("raise")
+        guard let wanted = a.first?.lowercased(), !wanted.isEmpty else { throw Fail(message: "raise needs (part of) a window title", code: 2) }
+        var best: (NSRunningApplication, AXUIElement, Int)? = nil
+        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+            let ax = AXUIElementCreateApplication(app.processIdentifier)
+            AXUIElementSetMessagingTimeout(ax, 0.5)
+            for w in (ax.attr(kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
+                let t = w.text(kAXTitleAttribute).lowercased()
+                let r = t == wanted ? 0 : t.hasPrefix(wanted) ? 1 : t.contains(wanted) ? 2 : -1
+                if r >= 0 && (best == nil || r < best!.2) { best = (app, w, r) }
+            }
+        }
+        guard let (app, win, _) = best else { throw Fail(message: "no window titled like: \(a[0])") }
+        return try acting {
+            if (win.attr(kAXMinimizedAttribute) as? Bool) == true {
+                AXUIElementSetAttributeValue(win, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+            }
+            win.perform(kAXRaiseAction, timeout: 0.5)
+            app.activate(options: [])
+            _ = until(2) { NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier }
+            return "raised \"\(win.text(kAXTitleAttribute))\" of \(app.localizedName ?? "?")"
+        }
 
     case "where":
         guard let needle = a.first, !needle.isEmpty else { throw Fail(message: "where needs the text to look for", code: 2) }
@@ -1242,6 +1329,11 @@ func execute(_ args: [String]) throws -> String {
         try requireTrust("scroll")
         let dy = Int32(try number(a.first, "lines")), dx = Int32(a.count > 1 ? try number(a[1], "dx") : 0)
         return try acting {
+            // The wheel scrolls whatever is under the pointer: bring it over the front window first.
+            if let win = focusedApp()?.element(kAXFocusedWindowAttribute), let f = frame(win), !f.contains(pointer()) {
+                glide(to: CGPoint(x: f.midX, y: f.midY))
+                pause(30)
+            }
             CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0)?.post(tap: .cghidEventTap)
             postedEvents = true
             return ""

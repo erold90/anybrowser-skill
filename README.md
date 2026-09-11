@@ -85,11 +85,11 @@ everything, Screen Recording for `shot` — then restart your terminal.
 
 | | |
 |---|---|
-| `shot [name]` | Capture the main display, scaled so pixels equal click points |
+| `shot [name] [--window \| --region X Y W H \| --display N]` | Capture, scaled so pixels equal points; a crop says its origin — smaller images, fewer tokens |
 | `where <text>` | Elements matching `<text>`, exact name first, with centre points |
 | `waitfor` · `waitgone` `<text> [secs]` | Return as soon as an element appears · disappears |
 | `read` · `ui` `[--all]` | Visible text in order (the page, on a web page) · named elements; `--all` includes off screen |
-| `apps` · `menus <app>` · `pos` | Running apps · an app's menu bar · the pointer |
+| `apps` · `windows` · `menus <app>` · `pos` | Running apps · every window with its frame · an app's menu bar · the pointer |
 | `click` · `dclick` · `rclick` `X Y` or `<name>` | Real clicks, at a point or on the best enabled match |
 | `press <name>` | Trigger a control through accessibility, pointer untouched |
 | `fill <field> "text"` | Focus a text field by name and replace its content, then read it back |
@@ -97,7 +97,8 @@ everything, Screen Recording for `shot` — then restart your terminal.
 | `type "text"` · `keys "text"` | Paste · real keystrokes, any characters |
 | `key <name>` · `hotkey "cmd shift" s` | Named keys · shortcuts on the current layout |
 | `menu <app> <menu> [<submenu>…] <item>` | A menu item by name, at any depth |
-| `focus <app>` · `open <url> [app]` · `upload <file>` | Front an app by its localized name, bundle name or id · a web page · answer the Open dialog |
+| `focus <app>` · `raise <title>` | Front an app by its localized name, bundle name or id · a window by (part of) its title |
+| `open <url> [app]` · `upload <file>` | A web page · answer the Open dialog |
 | `hover X Y` or `<name>` | Rest the pointer on something: hover menus, tooltips |
 | `move X Y` · `drag X1 Y1 X2 Y2` · `scroll N [dx]` | The pointer |
 | `do "<cmd>" "<cmd>" …` · `do -` | A sequence in one call, stopping at the first failure · the same from stdin |
@@ -139,7 +140,7 @@ ignore scripted values, browsers other than Chrome.
   without saying how; add a `read` step when the result matters.
 - **`click`, `fill` and `keys` borrow your mouse and keyboard** while they run.
   `press` doesn't.
-- **`shot` captures the main display only.**
+- **`shot` captures one display at a time** (`--display N`).
 
 ## Requirements
 
