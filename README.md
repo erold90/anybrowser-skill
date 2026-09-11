@@ -85,18 +85,19 @@ everything, Screen Recording for `shot` — then restart your terminal.
 |---|---|
 | `shot [name]` | Capture the main display, scaled so pixels equal click points |
 | `where <text>` | Elements matching `<text>`, exact name first, with centre points |
-| `waitfor <text> [secs]` | Return as soon as an element appears |
-| `read` · `ui` | The front window's text in order (the page, on a web page) · all named elements |
+| `waitfor` · `waitgone` `<text> [secs]` | Return as soon as an element appears · disappears |
+| `read` · `ui` `[--all]` | Visible text in order (the page, on a web page) · named elements; `--all` includes off screen |
 | `apps` · `menus <app>` · `pos` | Running apps · an app's menu bar · the pointer |
 | `click` · `dclick` · `rclick` `X Y` or `<name>` | Real clicks, at a point or on the best enabled match |
 | `press <name>` | Trigger a control through accessibility, pointer untouched |
-| `fill <field> "text"` | Focus a text field by name and replace its content |
+| `fill <field> "text"` | Focus a text field by name and replace its content, then read it back |
+| `select <menu> <option>` | Pick an option in a pop-up menu or `<select>`; restores the old value if it can't |
 | `type "text"` · `keys "text"` | Paste · real keystrokes, any characters |
 | `key <name>` · `hotkey "cmd shift" s` | Named keys · shortcuts on the current layout |
 | `menu <app> <menu> [<submenu>…] <item>` | A menu item by name, at any depth |
 | `focus <app>` · `open <url> [app]` · `upload <file>` | Front an app · a web page · answer the Open dialog |
 | `move X Y` · `drag X1 Y1 X2 Y2` · `scroll N [dx]` | The pointer |
-| `do "<cmd>" "<cmd>" …` | A sequence in one call, stopping at the first failure |
+| `do "<cmd>" "<cmd>" …` · `do -` | A sequence in one call, stopping at the first failure · the same from stdin |
 | `check` | Which permissions are missing |
 
 `MACUSE_SETTLE=0` skips the wait and report (fire and forget),

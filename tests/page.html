@@ -5,6 +5,7 @@
 <label for="name">Name</label><input id="name">
 <input id="email" placeholder="Email" aria-label="Email">
 <p id="inputs">real inputs: 0 · synthetic: 0</p>
+<label for="plan">Plan</label><select id="plan"><option>Free</option><option>Pro</option><option>Team</option></select>
 <button id="alert">Show alert</button>
 <label for="file">Upload file</label><input type="file" id="file">
 <button id="draft" disabled>Send draft</button>
@@ -23,6 +24,6 @@ document.addEventListener('mousedown', e => { $('time').textContent = 'last mous
 document.addEventListener('click', e => { e.isTrusted ? tc++ : uc++; $('clicks').textContent = `real clicks: ${tc} · synthetic: ${uc}`; }, true);
 $('alert').onclick = () => { alert('Test alert'); $('status').textContent = 'status: alert closed'; };
 $('file').onchange = e => { $('status').textContent = 'status: file ' + (e.target.files[0] || {}).name; };
-$('send').onclick = () => { $('status').textContent = `status: sent name=${$('name').value} email=${$('email').value} file=${($('file').files[0] || {}).name || '-'}`; };
+$('send').onclick = () => { $('status').textContent = `status: sent name=${$('name').value} email=${$('email').value} plan=${$('plan').value} file=${($('file').files[0] || {}).name || '-'}`; };
 $('target').onclick = () => { $('status').textContent = 'status: target hit'; };
 </script></body></html>

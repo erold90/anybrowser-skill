@@ -9,7 +9,7 @@ zmodload zsh/datetime 2>/dev/null || true
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 M="$HERE/scripts/mac.sh"
 PORT="${PORT:-8765}"
-URL="http://127.0.0.1:$PORT/page.html"
+URL="http://127.0.0.1:$PORT/page.html?v=$(date +%s)"   # no stale copy from the browser cache
 TMP="$(mktemp -d)"
 FILE="$TMP/logo.txt"; echo test > "$FILE"
 pass=0; fail=0
@@ -39,6 +39,7 @@ flow() {
     'waitfor "macuse test page" 15' \
     'fill Name "Ada Lovelace"' \
     'fill Email "ada@example.com"' \
+    'select Plan Pro' \
     'click "Show alert"' \
     'key return' \
     'click "Upload file"' \
@@ -47,7 +48,7 @@ flow() {
     'read' 2>&1)
   echo "      $browser: whole flow in $(( $(ms) - start )) ms"
   [ -n "${VERBOSE:-}" ] && grep -E '^\[[0-9]+\]' <<<"$out" | sed 's/^/        /'
-  t "$browser: flow completes"              "status: sent name=Ada Lovelace email=ada@example.com file=logo.txt" "$out"
+  t "$browser: flow completes"              "status: sent name=Ada Lovelace email=ada@example.com plan=Pro file=logo.txt" "$out"
   t "$browser: typing is real input"        "real inputs: [1-9][0-9]* · synthetic: 0" "$out"
   t "$browser: clicks are real clicks"      "real clicks: [1-9][0-9]* · synthetic: 0" "$out"
 

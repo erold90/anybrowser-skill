@@ -50,6 +50,9 @@ t "upload types nothing without a dialog" says "no file dialog in front" "$M" up
 t "do rejects an unclosed quote"        says "unclosed quote" "$M" do 'keys "abc'
 t "do stops at the first failure"       says "stopped at step 1 of 2" "$M" do "nosuchcommand" "pos"
 t "do runs every step when all pass"    says "\[2\] pos" "$M" do "pos" "pos"
+t "do - reads steps from stdin"         bash -c "printf '# comment\npos\n\npos\n' | \"$M\" do - | grep -q '\[2\] pos'"
+t "select needs a menu and an option"   says "select needs a menu and an option" "$M" select Plan
+t "waitgone returns when absent"        says "gone:" "$M" waitgone "zz-no-such-element-zz" 1
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -48,9 +48,11 @@ When you know the next few steps, send them together:
 scripts/mac.sh do 'fill Email "ada@example.com"' 'fill Password "…"' 'click "Sign in"' 'waitfor Dashboard 15'
 ```
 
-`do` stops at the first failing step and says which. Elements looked up by name
-are waited for (2 s, `MACUSE_WAIT`), and clicks right after a dialog appears are
-held back the half second browsers ignore input for — so no `sleep` between steps.
+`do` stops at the first failing step and says which, with each step's time.
+For a long flow, one step per line on stdin: `mac.sh do - <<'EOF' … EOF`.
+Elements looked up by name are waited for (2 s, `MACUSE_WAIT`), and clicks right
+after a dialog appears are held back the half second browsers ignore input for —
+so no `sleep` between steps.
 
 ## Find things by name
 
@@ -58,6 +60,8 @@ held back the half second browsers ignore input for — so no `sleep` between st
 |---|---|
 | A menu command | `menu TextEdit Format Font "Show Fonts"` |
 | A button, link, field | `click "Save"` · `fill "Email" "…"` · `press "Save"` |
+| A pop-up menu or `<select>` | `select "Country" "Italy"` — checks the value, restores it on failure |
+| Wait for a spinner to go | `waitgone "Loading"` |
 | What's there | `where "Save"` (best first, with points) · `ui` · `read` |
 | Anything the tree can't see | `shot`, read it, `click X Y` |
 
@@ -94,12 +98,12 @@ takes ~3 s.
 ## Commands
 
 ```
-LOOK   shot [name] · where <text> · waitfor <text> [secs] · read · ui · apps · menus <app> · pos
-ACT    click|dclick|rclick X Y|<name> · press <name> · fill <field> "text"
+LOOK   shot [name] · where <text> · waitfor|waitgone <text> [secs] · read|ui [--all] · apps · menus <app> · pos
+ACT    click|dclick|rclick X Y|<name> · press <name> · fill <field> "text" · select <menu> <option>
        type "text" · keys "text" · key <name> · hotkey "<mods>" <key>
        menu <app> <menu> [<submenu>...] <item> · focus <app> · open <url> [app] · upload <file>
        move X Y · drag X1 Y1 X2 Y2 · scroll N [dx]
-CHAIN  do "<cmd>" "<cmd>" ...
+CHAIN  do "<cmd>" "<cmd>" ...  ·  do -   (steps from stdin)
 ```
 
 Environment: `MACUSE_SETTLE=0` skips the reaction wait and report; `MACUSE_GLIDE=120`

@@ -295,25 +295,25 @@ func line(_ n: Node) -> String {
 /// Best enabled match with a point; scrolls it into view when it's off screen.
 /// Waits up to MACUSE_WAIT seconds (default 2) for it to appear: the previous step
 /// may still be closing a dialog or loading. Only the search repeats, never an action.
-func pick(_ needle: String, fields: Bool = false) throws -> Node {
+func pick(_ needle: String, fields: Bool = false, roles: Set<String>? = nil, needPoint: Bool = true) throws -> Node {
     let deadline = now() + Double(env("MACUSE_WAIT", 2))
     var found: Node? = nil
     let exact = needle.lowercased().trimmingCharacters(in: .whitespaces)
+    let allowed = fields ? inputRoles : roles
+    let usable = { (n: Node) -> Bool in
+        !n.disabled && (!needPoint || n.point != nil) && (allowed == nil || allowed!.contains(n.role))
+    }
     // The first exact, usable match in tree order is what ranking would pick
     // anyway: stop reading the window there.
-    let good = { (n: Node) -> Bool in
-        n.point != nil && !n.disabled && n.name.lowercased() == exact && (!fields || inputRoles.contains(n.role))
-    }
+    let good = { (n: Node) -> Bool in usable(n) && n.name.lowercased() == exact }
     while true {
-        var nodes = (try? frontTree(stop: good)) ?? []
-        nodes = nodes.filter { $0.point != nil && !$0.disabled }
-        if fields { nodes = nodes.filter { inputRoles.contains($0.role) } }
+        let nodes = ((try? frontTree(stop: good)) ?? []).filter(usable)
         found = rank(nodes, needle).first
         if found != nil || now() >= deadline { break }
         Watch().settle(first: 150, quiet: 40, max: 300)
     }
     guard var best = found else { throw Fail(message: "no element matching: \(needle)") }
-    if let p = best.point, !reaches(p, best.el) {
+    if needPoint, let p = best.point, !reaches(p, best.el) {
         // Off screen or covered: ask for it to be scrolled into view, then look again.
         best.el.perform("AXScrollToVisible")
         pause(200)
@@ -808,6 +808,92 @@ func upload(_ path: String) throws -> String {
     return "uploaded \(path)"
 }
 
+/// Is a pop-up menu window showing for this app? Visible in the window list even
+/// when accessibility can't see the menu (Safari's <select>), in any language.
+func menuWindowOpen(_ pid: pid_t) -> Bool {
+    let level = Int(CGWindowLevelForKey(.popUpMenuWindow))
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+    return list.contains { ($0[kCGWindowOwnerPID as String] as? pid_t) == pid && ($0[kCGWindowLayer as String] as? Int) == level }
+}
+
+/// Pick an option in a pop-up menu or <select>, confirmed by reading its value back.
+/// Native pop-ups and Chrome open a menu accessibility can see: press the item.
+/// Safari's menu is invisible to it: type the option's name into the open menu and
+/// confirm with Return — sent only when a menu window is really showing, because
+/// Return anywhere else could submit a form.
+func choose(_ popup: Node, _ option: String) throws -> String {
+    let want = option.lowercased()
+    let pid = popup.el.pid
+    func current() -> String {
+        for attribute in [kAXValueAttribute, kAXTitleAttribute] {
+            let t = popup.el.text(attribute)
+            if !t.isEmpty && t.lowercased() != popup.name.lowercased() { return t }
+        }
+        return popup.el.text(kAXValueAttribute)
+    }
+    func picked() -> Bool { current().lowercased() == want || current().lowercased().hasPrefix(want) }
+    func name(_ e: AXUIElement) -> String {
+        for attribute in [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute] {
+            let t = e.text(attribute); if !t.isEmpty { return t }
+        }
+        return ""
+    }
+    func visibleMenu() -> AXUIElement? {
+        popup.el.children.first { $0.role == "Menu" } ?? focusedApp()?.children.first { $0.role == "Menu" }
+    }
+    func typeIntoOpenMenu(_ text: String, until ok: () -> Bool) -> Bool {
+        guard menuWindowOpen(pid) else { return false }
+        typeKeys(text)
+        pause(120)
+        if menuWindowOpen(pid) { tap(36) }
+        return until(1.0, ok)
+    }
+    func menuOpen() -> Bool { visibleMenu() != nil || menuWindowOpen(pid) }
+    func closeMenu() { if until(0.2, { !menuOpen() }) == false { tap(53); _ = until(0.5, { !menuOpen() }) } }
+    let original = current()
+    let done = { () -> String in
+        closeMenu()
+        return "selected \"\(current())\" in \(label(popup))"
+    }
+    if picked() { return "\"\(current())\" was already selected in \(label(popup))" }
+
+    var options: [String] = []
+    popup.el.perform(kAXPressAction, timeout: 0.3)
+    if until(0.6, { visibleMenu() != nil || menuWindowOpen(pid) }) {
+        if let menu = visibleMenu() {
+            let items = menu.children.filter { $0.role == "MenuItem" }.map { ($0, name($0)) }
+            options = items.map { $0.1 }.filter { !$0.isEmpty }
+            let match = items.first { $0.1.lowercased() == want } ?? items.first { $0.1.lowercased().hasPrefix(want) }
+                ?? items.first { $0.1.lowercased().contains(want) }
+            if let (item, _) = match {
+                item.perform(kAXPressAction, timeout: 0.3)
+                if until(1.0, picked) { return done() }
+            }
+        }
+        if typeIntoOpenMenu(option, until: picked) { return done() }
+        if menuOpen() { tap(53) }
+    }
+    // The menu didn't open from accessibility: open it with a real click.
+    if let p = popup.point, reaches(p, popup.el) {
+        click(p)
+        if until(0.8, menuOpen), typeIntoOpenMenu(option, until: picked) { return done() }
+        if menuOpen() { tap(53) }
+    }
+    // A failed attempt must not leave a different option selected: put it back.
+    var note = ""
+    if !original.isEmpty && current() != original {
+        popup.el.perform(kAXPressAction, timeout: 0.3)
+        if until(0.6, menuOpen), typeIntoOpenMenu(original, until: { current() == original }) {
+            note = " (left at \"\(original)\")"
+        } else {
+            note = " — and it now shows \"\(current())\" instead of \"\(original)\""
+        }
+        closeMenu()
+    }
+    let known = options.isEmpty ? "" : " — there is: \(options.joined(separator: ", "))"
+    throw Fail(message: "could not select \"\(option)\" in \(label(popup))\(note)\(known)")
+}
+
 // MARK: - Screenshot
 
 func shot(_ name: String) throws -> String {
@@ -854,6 +940,7 @@ LOOK
   shot [name]              capture the main display, scaled so pixels = click points
   where <text>             elements matching <text>, best first, with centre points
   waitfor <text> [secs]    return as soon as <text> appears (default 10 s)
+  waitgone <text> [secs]   return as soon as <text> is gone
   read [--all]             the visible text in order — on a web page, the page
   ui [--all]               named elements you can see (--all: offscreen too)
   apps · menus <app> · pos
@@ -862,6 +949,7 @@ ACT  (each one waits for the app to react and reports what changed)
   click X Y | <name>       also dclick, rclick
   press <name>             AXPress: no pointer, works while you use the mouse
   fill <field> "text"      focus a text field by name, replace its content
+  select <menu> <option>   pick an option in a pop-up menu or <select>
   type "text"              paste: instant, keeps accents and emoji
   keys "text"              real keystrokes, any characters
   key <name> · hotkey "cmd shift" s
@@ -870,6 +958,7 @@ ACT  (each one waits for the app to react and reports what changed)
   move X Y · drag X1 Y1 X2 Y2 · scroll N [dx]
 
   do "<cmd>" "<cmd>" ...   run a sequence in one call; stops at the first failure
+  do -                     the same, one step per line from stdin
 
   check                    report which permissions are missing
 
@@ -975,12 +1064,28 @@ func execute(_ args: [String]) throws -> String {
     case "press":
         try requireTrust("press")
         guard let needle = a.first else { throw Fail(message: "press needs a name", code: 2) }
-        let hits = rank(try frontTree().filter { !$0.disabled }, needle)
-        guard let target = hits.first else { throw Fail(message: "no element matching: \(needle)") }
+        let target = try pick(needle, needPoint: false)
         return try acting {
             let r = target.el.perform(kAXPressAction, timeout: 0.3)
             if r != .success && r != .cannotComplete { throw Fail(message: "\(label(target)) can't be pressed (\(r.rawValue)) — try click") }
             return "pressed \(label(target))"
+        }
+
+    case "select":
+        try requireTrust("select")
+        guard a.count == 2 else { throw Fail(message: "select needs a menu and an option: select \"Country\" \"Italy\"", code: 2) }
+        let popup = try pick(a[0], roles: ["PopUpButton", "ComboBox", "MenuButton"], needPoint: false)
+        return try acting { try choose(popup, a[1]) }
+
+    case "waitgone":
+        guard let needle = a.first, !needle.isEmpty else { throw Fail(message: "waitgone needs the text that should disappear", code: 2) }
+        let secs = a.count > 1 ? try number(a[1], "seconds") : 10
+        let deadline = now() + secs
+        while true {
+            let hits = rank(try frontTree(), needle)
+            if hits.isEmpty { return "gone: \(needle)" }
+            if now() >= deadline { throw Fail(message: "still there after \(Int(secs))s: \(label(hits[0]))") }
+            Watch().settle(first: 300, quiet: 40, max: 600)
         }
 
     case "fill":
@@ -1100,6 +1205,14 @@ func execute(_ args: [String]) throws -> String {
 
     case "do":
         var lines: [String] = []
+        // do - : one step per line from stdin; blank lines and # comments skipped.
+        var steps = a
+        if a == ["-"] {
+            let input = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            steps = input.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        }
+        let a = steps
         for (i, step) in a.enumerated() {
             let words = try tokenize(step)
             guard let first = words.first, first != "do" else { continue }
