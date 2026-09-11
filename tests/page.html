@@ -1,19 +1,28 @@
-<!doctype html><html lang="it"><head><meta charset="utf-8"><title>macuse test</title>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>macuse test</title>
 <style>body{font:16px -apple-system;margin:40px;max-width:640px} label,input,button{display:block;margin:8px 0} input{font-size:16px;padding:6px;width:320px} button{font-size:16px;padding:6px 14px}</style></head>
 <body>
-<h1>Pagina di prova macuse</h1>
-<label for="nome">Nome</label><input id="nome" aria-label="Nome">
+<h1>macuse test page</h1>
+<label for="name">Name</label><input id="name">
 <input id="email" placeholder="Email" aria-label="Email">
-<p id="reali">input reali: 0 · sintetici: 0</p>
-<button id="avviso">Mostra avviso</button>
-<label for="file">Carica file</label><input type="file" id="file" aria-label="Carica file">
-<button id="spento" disabled>Invia bozza</button>
-<button id="invia">Invia</button>
-<p id="stato">stato: pronto</p>
+<p id="inputs">real inputs: 0 · synthetic: 0</p>
+<button id="alert">Show alert</button>
+<label for="file">Upload file</label><input type="file" id="file">
+<button id="draft" disabled>Send draft</button>
+<button id="send">Send</button>
+<button id="target">Target</button>
+<p id="clicks">real clicks: 0 · synthetic: 0</p>
+<p id="time">last mousedown: 0</p>
+<p id="status">status: ready</p>
 <script>
-let t=0,u=0; const R=document.getElementById('reali'), S=document.getElementById('stato');
-for (const id of ['nome','email']) document.getElementById(id).addEventListener('input', e => { e.isTrusted ? t++ : u++; R.textContent = `input reali: ${t} · sintetici: ${u}`; });
-document.getElementById('avviso').onclick = () => { alert('Avviso di prova'); S.textContent = 'stato: avviso chiuso'; };
-document.getElementById('file').onchange = e => { S.textContent = 'stato: file ' + (e.target.files[0]||{}).name; };
-document.getElementById('invia').onclick = () => { S.textContent = `stato: inviato nome=${nome.value} email=${email.value} file=${(file.files[0]||{}).name||'-'}`; };
+// The page keeps its own record: whether events came from the OS (isTrusted)
+// or from script, and when the last mousedown arrived, in epoch milliseconds.
+let ti = 0, ui = 0, tc = 0, uc = 0;
+const $ = (id) => document.getElementById(id);
+for (const id of ['name', 'email']) $(id).addEventListener('input', e => { e.isTrusted ? ti++ : ui++; $('inputs').textContent = `real inputs: ${ti} · synthetic: ${ui}`; });
+document.addEventListener('mousedown', e => { $('time').textContent = 'last mousedown: ' + Math.round(performance.timeOrigin + e.timeStamp); }, true);
+document.addEventListener('click', e => { e.isTrusted ? tc++ : uc++; $('clicks').textContent = `real clicks: ${tc} · synthetic: ${uc}`; }, true);
+$('alert').onclick = () => { alert('Test alert'); $('status').textContent = 'status: alert closed'; };
+$('file').onchange = e => { $('status').textContent = 'status: file ' + (e.target.files[0] || {}).name; };
+$('send').onclick = () => { $('status').textContent = `status: sent name=${$('name').value} email=${$('email').value} file=${($('file').files[0] || {}).name || '-'}`; };
+$('target').onclick = () => { $('status').textContent = 'status: target hit'; };
 </script></body></html>
