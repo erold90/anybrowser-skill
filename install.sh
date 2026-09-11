@@ -17,14 +17,14 @@ esac
 
 for DEST in "${targets[@]}"; do
   # Replace scripts and playbooks whole, so nothing lingers from an older version.
-  rm -rf "$DEST/scripts" "$DEST/sites"
+  rm -rf "$DEST/scripts" "$DEST/playbooks"
   mkdir -p "$DEST/scripts/src"
   cp "$HERE/SKILL.md" "$DEST/SKILL.md"
   cp "$HERE/scripts/anybrowser.sh" "$DEST/scripts/"
   cp "$HERE"/scripts/src/*.swift "$DEST/scripts/src/"
   chmod +x "$DEST/scripts/anybrowser.sh"
   # Playbooks: what an agent should know before driving a specific browser or site.
-  cp -R "$HERE/sites" "$DEST/sites"
+  cp -R "$HERE/playbooks" "$DEST/playbooks"
   "$DEST/scripts/anybrowser.sh" version >/dev/null      # builds the binary (~30 s the first time)
   echo "installed -> $DEST"
 done

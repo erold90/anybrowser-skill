@@ -466,7 +466,10 @@ func execute(_ args: [String]) throws -> String {
         try requireTrust("select")
         guard a.count == 2 else { throw Fail(message: "select needs a menu and an option: select \"Country\" \"Italy\"", code: 2) }
         let popup = try pick(a[0], roles: ["PopUpButton", "ComboBox", "MenuButton"], needPoint: false)
+        // choose() reads the value back, so silence around it isn't doubt.
         return try acting { try choose(popup, a[1]) }
+            .replacingOccurrences(of: " → no reaction seen — confirm with read (or shot) before building on it", with: "")
+            .replacingOccurrences(of: " → the app reacted (1 accessibility events), nothing moved in focus", with: "")
 
     case "waitgone":
         guard let needle = a.first, !needle.isEmpty else { throw Fail(message: "waitgone needs the text that should disappear", code: 2) }
@@ -936,7 +939,7 @@ func execute(_ args: [String]) throws -> String {
             }
         }
         switch protected(home + "/Library/Safari/Bookmarks.plist") {
-        case .some(true): lines.append("full disk access  off — Safari history and bookmarks go through its windows (history --ui); optional")
+        case .some(true): lines.append("full disk access  off — Safari history and bookmarks are read from its own views (slower, no visit times); optional")
         case .some(false): lines.append("full disk access  ok — Safari history and bookmarks read from their files")
         case .none: break
         }

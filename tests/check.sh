@@ -24,7 +24,7 @@ says() { local want="$1" out; shift; out=$("$@" 2>&1); grep -q -- "$want" <<<"$o
 "$M" pos >/dev/null 2>&1   # builds the binary if needed
 
 CLAUDE_SKILLS="$TMP/skills" "$HERE/install.sh" >/dev/null 2>&1
-t "install builds a working binary" test -x "$TMP/skills/anybrowser/scripts/anybrowser" -a -f "$TMP/skills/anybrowser/scripts/src/main.swift" -a -d "$TMP/skills/anybrowser/sites"
+t "install builds a working binary" test -x "$TMP/skills/anybrowser/scripts/anybrowser" -a -f "$TMP/skills/anybrowser/scripts/src/main.swift" -a -d "$TMP/skills/anybrowser/playbooks"
 
 # Each payload would create a file if it were ever interpreted as code.
 "$M" menus "Finder\" to return (do shell script \"touch $TMP/p1\") --" >/dev/null 2>&1

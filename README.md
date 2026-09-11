@@ -1,197 +1,153 @@
 # anybrowser
 
-A [Claude Code](https://claude.com/claude-code) skill that gives the agent eyes and hands
-on the macOS desktop — for the apps that have no CLI and no API.
-
-Claude already reads your files and drives your browser. This covers the rest:
-Finder, Preview, Xcode, System Settings, installers, the native file picker,
-that one legacy app your workflow still depends on.
-
-![anybrowser driving TextEdit](docs/demo.gif)
+**Your real browser, driven by an AI agent — Safari, Chrome and the rest, no extension.**
+An agent skill for Claude Code and Codex on macOS.
 
 ```bash
-scripts/anybrowser.sh click "Save"                     # by name, real pointer
-scripts/anybrowser.sh fill "Email" "ada@example.com"   # real keystrokes into a named field
-scripts/anybrowser.sh menu TextEdit Format Font "Show Fonts"
-scripts/anybrowser.sh upload ~/Desktop/logo.png        # the file dialog a browser can't script
-scripts/anybrowser.sh do 'fill Name "Ada"' 'click "Show alert"' 'key return' 'click Send' 'read'
+anybrowser.sh go github.com/notifications          # current tab, waits for the load
+anybrowser.sh text                                 # the whole page, line by line, in one call
+anybrowser.sh do 'fill Email "ada@example.com"' 'click "Sign in"' 'expect "Dashboard" 15'
+anybrowser.sh tabs                                 # every tab of every browser, with addresses
+anybrowser.sh history invoice --days 7             # from the browser's own files
+anybrowser.sh upload ~/Desktop/logo.png            # the native file picker
 ```
 
-## What makes it different
+It works in the browser the user already has open — signed in, with their tabs —
+and keeps working when a browser extension isn't installed, isn't connected, or
+the browser isn't Chrome. The same binary drives any other Mac app.
 
-**Every action reports what it changed.** anybrowser listens to the app's
-accessibility notifications while it acts, waits for the app to settle, and
-answers on the same line:
+## How
 
-```
-filled Email  [TextField] → focus: Email  [TextField] · value: "ada@example.com"
-clicked Show alert  [Button] at 81 405 → dialog: "Test alert" — buttons: OK
-clicked Upload file  [StaticText] at 306 433 → window: (untitled) (sheet, file dialog)
-clicked Send  [Button] at 64 531 → page: "status: sent name=Ada plan=Pro file=logo.png"
-hotkey cmd w → now showing "YouTube"
-```
+Each thing comes from wherever the browser answers fastest and most exactly:
 
-An exit code of 0 only means an event was sent. The report is what tells the
-agent it landed — without a screenshot, which costs a second and ~1,700 tokens.
-Web pages don't announce their text changing, so in a browser (or an Electron
-app) anybrowser compares the visible page before and after: the `page:` line is the
-status message, the error or the result the click produced.
+| What | Where it comes from |
+|---|---|
+| Tabs, addresses, navigation, private windows | the browser's scripting dictionary (Apple Events, run in-process — no `osascript`) |
+| History, bookmarks, download folder | the browser's own files: Chrome's `History` (SQLite) and `Bookmarks` (JSON); Safari's views when Full Disk Access is off |
+| Finding an element | the browser's accessibility search index — what VoiceOver's rotor uses: 1–50 ms even on Gmail |
+| Page text | accessibility text markers: the whole page in one call |
+| Clicks and typing | real CoreGraphics events: pages see `isTrusted` input |
+| Downloads' origin | the address macOS records on every downloaded file |
 
-**A whole flow in one call.** The slow part of an agent driving a GUI isn't the
-click, it's the round trip to the model between clicks. `do` runs a sequence in
-one process, and each step waits for what the previous one started: elements
-looked up by name are waited for, and a click right after a dialog opens is held
-back the half second Chrome ignores input for. In `tests/web.sh`, an alert, two
-fields, the native file dialog and a submit run as a single call: 6.8 s in
-Safari, 10.5 s in a Chrome launched cold.
+Every action waits for the page to react and **reports what changed** — `page:
+"status: sent"`, `dialog: "…" — buttons: Ok`, `new tab: "…"` — so the agent
+doesn't need a screenshot to know a step worked. `do` runs a sequence in one call.
+Listings number elements (`@1`, `@2`) that later commands can target exactly.
 
-**Native, and fast.** One Swift file, compiled on your Mac at install. It talks
-to the Accessibility API and posts CoreGraphics events in-process — no
-AppleScript, no helper apps, no daemon. On a 2018 Intel MacBook Pro, a click by
-name reaches the web page's `mousedown` handler 150–190 ms after the command
-starts, lookup and pointer travel included; reading a window's element tree
-dropped from ~1 s (JavaScript for Automation) to ~0.1 s.
+No debugging port: since Chrome 136, remote debugging doesn't work on the default
+profile anyway. JavaScript in pages (`js`) is there for users who turn on "Allow
+JavaScript from Apple Events", and nothing else needs it.
 
-**Real input.** Clicks and keystrokes are OS events, so pages see `isTrusted`
-events: on the test page every click and keystroke counts as real, none as
-synthetic, in Safari and Chrome. `keys` sends each character as the key that
-produces it on the current layout — SwiftUI apps like Calculator ignore anything
-else — and falls back to a Unicode keystroke for what the layout lacks (emoji);
-`hotkey` looks keys up the same way.
-`press` triggers a control through accessibility without moving the pointer, so
-you can keep using your mouse.
+## Measured against Claude in Chrome
 
-**Things that used to break quietly:**
-- Retina: `shot` scales to points, so a pixel read off the image is where `click` lands.
-- Permissions: without Accessibility, posted events vanish silently. `check`
-  moves the pointer one point and reads it back.
-- Chromium builds a page's tree only when an assistive app asks. anybrowser asks —
-  the way VoiceOver does for Chrome, Brave, Edge, Arc; with `AXManualAccessibility`
-  for Electron and CEF apps (VS Code, Slack, Notion, Claude…) — and waits until
-  the page has content. Tested cold on Chrome and on the Claude desktop app
-  (Electron: 13 elements before, 341 after).
-- The system Open panel: `upload` checks it's really in front (identifier
-  `open-panel`, the same in every language) before typing a path, waits for the
-  Open button to enable, and confirms the dialog closed.
-- `type` pastes, then restores whatever was on the clipboard — images and rich
-  text included — and marks the pasted text transient for clipboard managers.
+Same page, same Chrome, same Mac (macOS 15.7, Intel), 11 September 2026. Times are
+the agent's tool call, start to result, as the session recorded them — model
+thinking time not included.
+
+| Action | Claude in Chrome | anybrowser |
+|---|---|---|
+| Open a page | 2385 ms | **630 ms** |
+| Read the page's text | 490–1014 ms | **227 ms** |
+| Find the Send button | 1706 ms (`find`) · 523 ms (`read_page`) | **233 ms** |
+| Fill a text field | 1880 ms — a scripted value (`isTrusted: false`) | **738 ms** — real typing, value read back |
+| Pick a `<select>` option | 1827 ms | **~400 ms** (1032 ms before the type-ahead path) |
+| Click Send | 486–614 ms — "Clicked", effect unknown | **438 ms** — report shows `status: sent` |
+| Screenshot | 570–665 ms | 613 ms |
+| List tabs | 4209 ms (first call) | **312 ms** |
+| New tab | 1545 ms | **505 ms** |
+| Close tab | **175–195 ms** | 514 ms |
+| Whole form: open, 2 fields, select, send, verify | 2 calls, 4681 ms — and the send never reached the page | **1 call, 2508 ms**, confirmed |
+| JavaScript alert | the click never reached the page | opened, answered, checked: 1554 ms |
+| Safari · no extension · native file picker | no | yes |
+
+What went wrong on the other side, in this run: two clicks by element ref reported
+"Clicked on element" and the page registered no click at all; one of three clicks
+by coordinates didn't land either. Tools that answer "done" without the effect
+make an agent re-check — another call, more seconds of model time.
 
 ## Install
 
 ```bash
-git clone https://github.com/erold90/anybrowser.git
-cd anybrowser && ./install.sh
+git clone https://github.com/erold90/anybrowser-skill.git
+cd anybrowser-skill && ./install.sh          # Claude Code: ~/.claude/skills/anybrowser
+./install.sh --codex                         # Codex:       ~/.codex/skills/anybrowser
+./install.sh --all                           # both
 ```
 
-Needs the Swift compiler from the Command Line Tools (`xcode-select --install`;
-if you have `git`, you likely have them). The installer copies the skill to
-`~/.claude/skills/anybrowser/`, builds the binary (~20 s) and runs `check`. Grant
-what it reports in System Settings → Privacy & Security — Accessibility for
-everything, Screen Recording for `shot` — then restart your terminal.
+Needs the Swift compiler from the Command Line Tools (`xcode-select --install`).
+The installer builds the binary (~30 s) and runs `check`, which says what's
+missing:
+
+- **Accessibility** for your terminal app — everything needs it.
+- **Screen Recording** — only for `shot`.
+- **Automation** per browser — macOS asks the first time `tabs` or `go` talks to it.
+- **Full Disk Access** — optional: Safari's history and bookmarks are read from its
+  files instead of its windows.
+- **Allow JavaScript from Apple Events** — optional, only for `js`. It lets any app
+  allowed to control the browser run code in your signed-in pages; leave it off
+  unless you need it.
 
 ## Commands
 
-| | |
+| Browser | |
 |---|---|
-| `shot [name] [--window \| --region X Y W H \| --display N]` | Capture, scaled so pixels equal points; a crop says its origin — smaller images, fewer tokens |
-| `where <text>` | Elements matching `<text>`, exact name first, with centre points and on/off state |
-| `waitfor` · `waitgone` `<text> [secs]` | Return as soon as an element appears · disappears |
-| `read` · `ui` `[--all]` | Visible text in order (the page, on a web page) · named elements; `--all` includes off screen |
-| `apps` · `windows` · `menus <app> [<menu>…]` · `pos` | Running apps · every window with its frame · a menu bar or a menu's items · the pointer |
-| `click` · `dclick` · `rclick` `X Y` or `<name>` | Real clicks, at a point or on the best enabled match |
-| `press <name>` | Trigger a control through accessibility, pointer untouched |
-| `fill <field> "text"` | Focus a text field by name and replace its content, then read it back |
-| `select <menu> <option>` | Pick an option in a pop-up menu or `<select>`; restores the old value if it can't |
-| `type "text"` · `keys "text"` | Paste · real keystrokes, any characters |
-| `key <name>` · `hotkey "cmd shift" s` | Named keys · shortcuts on the current layout |
-| `menu <app> <menu> [<submenu>…] <item>` | A menu item by name, at any depth |
-| `focus <app>` · `quit <app>` · `raise <title>` | Front (or launch) an app by its localized name, bundle name or id · quit it like Cmd+Q · front a window by (part of) its title |
-| `window move X Y` · `resize W H` · `maximize` · `minimize` · `restore` · `fullscreen` · `close` `[title]` | Arrange the front window, or the one whose title matches — set directly through accessibility, no dragging; the report gives the resulting frame |
-| `open <url> [app]` · `upload <file>` | A web page · answer the Open dialog |
-| `hover X Y` or `<name>` | Rest the pointer on something: hover menus, tooltips |
-| `drag X1 Y1 X2 Y2` or `<name> <name>` | Press, travel, release — by name, it also says whether the item left its place |
-| `move X Y` · `scroll N [dx]` | The pointer |
-| `do "<cmd>" "<cmd>" …` · `do -` | A sequence in one call, stopping at the first failure · the same from stdin |
-| `check` | Which permissions are missing |
+| `tabs` · `tab <n\|text>` · `tab new [address] [--window]` · `tab close [n\|text]` · `private [address]` | Tabs and windows |
+| `go <address>` · `back` · `forward` · `reload` · `waitload [secs]` · `url` | Navigation, each waiting for the load |
+| `text [--max N]` · `links [text]` · `find <kind> [text]` · `table [n]` | Read: whole-page text, links with addresses, elements by kind, a table's rows |
+| `js "<code>"` · `source [--save file]` | JavaScript (opt-in) · the HTML (Safari) |
+| `history [text] [--days N]` · `bookmarks [text]` · `bookmark ["title"]` · `readinglist` | History and bookmarks |
+| `downloads [n]` · `settings [text]` · `use <browser>` | Downloads with their origin · settings · which browser |
 
-The pointer travels instead of jumping: an eased path at ~240 events a second,
-25 ms for a short hop up to ~110 ms across the screen — a click by name still
-reaches the page in under 200 ms. `ANYBROWSER_GLIDE=0` jumps, `ANYBROWSER_GLIDE=<ms>`
-fixes the travel time. `ANYBROWSER_SETTLE=0` skips the wait and report (fire and
-forget), `ANYBROWSER_WAIT` sets how long a lookup by name waits (seconds, default 2),
-`ANYBROWSER_DEBUG=1` prints where a slow step spends its time.
+| Page and desktop | |
+|---|---|
+| `click` · `dclick` · `rclick` `X Y` · `<name>` · `@ref` | Real clicks |
+| `fill <field> "text"` · `select <menu> <option>` · `type` · `keys` · `key` · `hotkey` | Typing and forms |
+| `where <text>` · `ui` · `read` · `waitfor` · `waitgone` · `expect` | Look and wait |
+| `upload <file>` · `press <name>` · `hover` · `drag` · `scroll` | The rest of the hands |
+| `shot [--window\|--element <name>\|--region …]` | Screenshots scaled so a pixel is a point |
+| `menu <app> …` · `menus <app>` · `focus` · `quit` · `windows` · `raise` · `window …` | Native apps and windows |
+| `do "<cmd>" …` · `do -` | A sequence in one call, stopping at the first failure |
+| `check` · `version` | Permissions and what each browser allows |
 
-## App playbooks
+## Playbooks
 
-`apps/<app>.md` holds what an agent needs to drive a specific app without
-rediscovering it: the names of its controls, working recipes, and the traps
-already met. The skill tells the agent to read the playbook first. So far:
-`apps/gmail.md` (compose, search, read, reply, open links — verified on the real
-mail.google.com). Contributions welcome: drive the app, write down only what you
-verified.
-
-## On the web
-
-A browser extension works inside the page — it reads the DOM, runs JavaScript
-and leaves your mouse alone. Use one when you have it. anybrowser covers what an
-extension can't reach: the native file picker, JavaScript alerts, pages that
-ignore scripted values, browsers other than Chrome.
+`playbooks/*.md` hold what an agent needs to know before driving a browser or a
+site — control names, recipes, traps already met — so it doesn't rediscover them:
+`safari.md`, `chrome.md`, `gmail.md`. Contributions welcome: drive it, write down
+only what you verified.
 
 ## Tests
 
-The test that matters most isn't in this folder: a fresh agent, given only
-`SKILL.md` and a real task, reporting where it got stuck. Two rounds — a TextEdit
-document (5 steps, 10 calls), a web form with an alert, a pop-up and the file
-dialog (8 steps, 5 calls), and a Finder rename-and-drag (6 steps) — shaped `menus <app> <menu>`, `read` with values, `drag` by
-name, the `dialog:`/`page:`/`selected:`/`now showing` reports and most of SKILL.md.
-
-
-- `tests/check.sh` — build, install, validation, and that no argument ever runs as code. Doesn't drive your apps.
+- `tests/check.sh` — build, install, validation, and that no argument ever runs as
+  code (including through the browser scripts). Doesn't drive your apps.
 - `tests/web.sh` — opens `tests/page.html` in a new Safari window and a throwaway
-  Chrome profile, runs the whole flow as one `do`, and checks the page's own
-  record: the submitted values, real inputs, real clicks. Takes over the mouse
-  and keyboard for about a minute.
+  Chromium profile; runs a whole form flow (fields, select, alert, file dialog,
+  submit) and the browser commands (go, back, forward, reload, text, refs, tabs),
+  each as one `do`, and checks the page's own record — real inputs, real clicks.
+  Never touches your own tabs.
+- The test that matters most isn't a script: a fresh agent, given only `SKILL.md`
+  and a real task, reporting where it got stuck. Most of SKILL.md came from those reports.
 
 ## What it can't do
 
-- **It sees what apps expose.** AppKit apps (TextEdit, Finder, Mail) expose a
-  rich tree; many SwiftUI apps expose unnamed buttons; apps that draw their own
-  UI (games, canvases) expose nothing. There: `shot` and coordinates. Chromium
-  apps built on neither Electron nor CEF may expose no page at all — in our
-  test, the ChatGPT desktop app showed its window frame and nothing inside.
-- **Names follow the system language.** On an Italian Mac it's
-  `menu TextEdit Formato Font "Mostra font"`. Read `menus` or `ui` first.
-- **Not every change has a name.** The page comparison covers what's visible in
-  the front window; a change off screen, or in an app that neither announces it
-  nor is a browser, shows up as "the app reacted" — add a `read` step when the
-  result matters.
-- **`click`, `fill` and `keys` borrow your mouse and keyboard** while they run.
-  `press` doesn't.
-- **`shot` captures one display at a time** (`--display N`).
+- **Console and network logs** need DevTools; without `js` they aren't available.
+- **Firefox** has no scripting dictionary: its pages work (click, fill, text), its tabs by title only.
+- **Arc, Brave, Edge, Vivaldi, Opera** share Chrome's paths but weren't run.
+- **`click`, `fill` and `keys` borrow the mouse and keyboard** while they run. `press` doesn't.
+- **It sees what apps expose.** Canvas apps and games expose nothing: `shot` and coordinates.
 
 ## When something doesn't work
 
-- **Clicks and keys do nothing, silently.** Accessibility isn't granted to the
-  app that runs the agent. `scripts/anybrowser.sh check` tells you; grant it to your
-  terminal (Terminal, iTerm, Ghostty…) in System Settings → Privacy & Security →
-  Accessibility, then quit and reopen the terminal.
-- **`shot` is black or fails.** Same place, Screen Recording.
-- **"the screen is locked".** Unlock the Mac; nothing can be driven behind the lock screen.
-- **An element isn't found.** Read the names first — `ui`, `where <part of it>`,
-  `menus <app> <menu>` — they follow the system language. On a web page in
-  Chrome or an Electron app, the first read can take ~3 s.
-- **"no reaction seen".** The app may draw its own UI (no accessibility tree) or
-  be slow to answer: `read` or `shot --window` to see what happened.
-- **Anything else:** `ANYBROWSER_DEBUG=1 scripts/anybrowser.sh <command>` prints where the
-  time goes; open an issue with that and `scripts/anybrowser version`.
+- **Clicks and keys do nothing, silently** — Accessibility isn't granted to the app
+  running the agent. `check` measures it.
+- **"refuses to be controlled"** — Automation for that browser was denied: System
+  Settings → Privacy & Security → Automation.
+- **An element isn't found** — list first: `find button`, `where <part>`; names follow the page's language.
+- **The first command on Chrome takes ~2 s** — Chrome builds a page's tree only when asked.
+- **Anything else** — `ANYBROWSER_DEBUG=1 anybrowser.sh <command>` shows where the
+  time goes; open an issue with that and `anybrowser.sh version`.
 
-Uninstall: `rm -rf ~/.claude/skills/anybrowser`.
-
-## Requirements
-
-macOS with the Swift compiler (Command Line Tools). Tested on macOS Sequoia 15.7,
-Intel, with an Italian system: Safari, Chrome, TextEdit, Finder, System Settings,
-Calculator and the Claude desktop app. The GIF above predates the native engine.
+Uninstall: `rm -rf ~/.claude/skills/anybrowser ~/.codex/skills/anybrowser`.
 
 ## Licence
 

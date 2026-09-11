@@ -1261,6 +1261,25 @@ func choose(_ popup: Node, _ option: String) throws -> String {
     }
     if picked() { return "\"\(current())\" was already selected in \(label(popup))" }
 
+    // A <select> on a web page takes type-ahead while it has the focus and its menu
+    // is closed: focus it, type the option, check the value — no menu to open and
+    // wait on. Only when its browser is in front, so the keys can't land elsewhere.
+    // Browsers join keys typed within a second into one search ("TeamPro"): let the
+    // previous one expire first.
+    let typeAhead = NSTemporaryDirectory() + "anybrowser-typeahead"
+    if popup.inWeb, focusedApp(timeout: 0.3)?.pid == pid,
+       AXUIElementSetAttributeValue(popup.el, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success,
+       until(0.3, { (popup.el.attr(kAXFocusedAttribute) as? Bool) == true }) {
+        if let last = (try? FileManager.default.attributesOfItem(atPath: typeAhead)[.modificationDate]) as? Date {
+            let since = -last.timeIntervalSinceNow
+            if since < 1.1 { pause((1.1 - since) * 1000) }
+        }
+        typeKeys(option)
+        FileManager.default.createFile(atPath: typeAhead, contents: nil)
+        if until(0.5, picked) { return done() }
+        if menuOpen() { tap(53) }
+    }
+
     var options: [String] = []
     popup.el.perform(kAXPressAction, timeout: 0.3)
     if until(0.6, { visibleMenu() != nil || menuWindowOpen(pid) }) {
