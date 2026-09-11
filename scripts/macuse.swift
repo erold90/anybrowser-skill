@@ -72,7 +72,19 @@ func axSize(_ v: CFTypeRef?) -> CGSize? {
     return AXValueGetValue(v as! AXValue, .cgSize, &s) ? s : nil
 }
 
+/// A locked screen swallows every click and hides every window behind loginwindow;
+/// without this, each command would fail as "not found" for the wrong reason.
+func screenLocked() -> Bool {
+    guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+    return (session["CGSSessionScreenIsLocked"] as? Bool) == true
+}
+
+func requireUnlocked() throws {
+    if screenLocked() { throw Fail(message: "the screen is locked — nothing can be seen or clicked until the user unlocks it") }
+}
+
 func requireTrust(_ what: String) throws {
+    try requireUnlocked()
     if !AXIsProcessTrusted() {
         throw Fail(message: "\(what) needs the Accessibility permission — run: macuse check")
     }
@@ -120,6 +132,33 @@ struct Node {
     let point: CGPoint?
     let disabled: Bool
     let inWeb: Bool
+    var reachable = true          // a click at `point` lands on this element
+}
+
+/// Would a click at `p` land on `target`? Ask the system what is at that point —
+/// across all apps, so a covering window, banner or dialog counts — and accept the
+/// target itself, anything inside it, or a close container (a link around its text).
+func reaches(_ p: CGPoint, _ target: AXUIElement) -> Bool {
+    guard onScreen(p) else { return false }
+    var hit: AXUIElement?
+    let sys = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(sys, 0.5)
+    guard AXUIElementCopyElementAtPosition(sys, Float(p.x), Float(p.y), &hit) == .success, let h = hit else {
+        return true                                       // can't tell: trust the frame
+    }
+    var e: AXUIElement? = h
+    for _ in 0..<10 {
+        guard let cur = e else { break }
+        if CFEqual(cur, target) { return true }
+        e = cur.element(kAXParentAttribute)
+    }
+    var t = target.element(kAXParentAttribute)
+    for _ in 0..<3 {
+        guard let cur = t else { break }
+        if CFEqual(cur, h) { return true }
+        t = cur.element(kAXParentAttribute)
+    }
+    return false
 }
 
 let inputRoles: Set<String> = ["TextField", "TextArea", "ComboBox", "SearchField", "SecureTextField"]
@@ -132,10 +171,12 @@ let wanted = [kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXV
               kAXPlaceholderValueAttribute, kAXPositionAttribute, kAXSizeAttribute,
               kAXEnabledAttribute, kAXChildrenAttribute] as CFArray
 
-func walk(_ root: AXUIElement, maxDepth: Int = 40, maxNodes: Int = 8000) -> (nodes: [Node], sawWeb: Bool) {
+func walk(_ root: AXUIElement, maxDepth: Int = 40, maxNodes: Int = 8000,
+          stop: ((Node) -> Bool)? = nil, clip: CGRect? = nil) -> (nodes: [Node], sawWeb: Bool) {
     var nodes: [Node] = []
     var visited = 0
     var sawWeb = false
+    var done = false
 
     func value(_ values: [AnyObject], _ i: Int) -> CFTypeRef? {
         guard i < values.count else { return nil }
@@ -146,7 +187,7 @@ func walk(_ root: AXUIElement, maxDepth: Int = 40, maxNodes: Int = 8000) -> (nod
     func str(_ v: CFTypeRef?) -> String { ((v as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
 
     func visit(_ el: AXUIElement, _ depth: Int, _ inWebIn: Bool) {
-        if depth > maxDepth || visited >= maxNodes { return }
+        if done || depth > maxDepth || visited >= maxNodes { return }
         visited += 1
         var raw: CFArray?
         guard AXUIElementCopyMultipleAttributeValues(el, wanted, AXCopyMultipleAttributeOptions(rawValue: 0), &raw) == .success,
@@ -158,13 +199,19 @@ func walk(_ root: AXUIElement, maxDepth: Int = 40, maxNodes: Int = 8000) -> (nod
         if name.isEmpty { name = str(value(values, 2)) }
         if name.isEmpty, inputRoles.contains(role) { name = str(value(values, 4)) }
         if name.isEmpty { name = str(value(values, 3)) }
+        let origin = axPoint(value(values, 5)), size = axSize(value(values, 6))
+        // Reading only what's visible: a subtree whose frame misses the window is skipped whole.
+        if let clip = clip, let o = origin, let sz = size, sz.width > 0, sz.height > 0,
+           !CGRect(origin: o, size: sz).intersects(clip) { return }
         if !name.isEmpty {
             var point: CGPoint? = nil
-            if let p = axPoint(value(values, 5)), let s = axSize(value(values, 6)), s.width > 0 {
+            if let p = origin, let s = size, s.width > 0 {
                 point = CGPoint(x: (p.x + s.width / 2).rounded(), y: (p.y + s.height / 2).rounded())
             }
             let enabled = value(values, 7) as? Bool
-            nodes.append(Node(el: el, name: name, role: role, point: point, disabled: enabled == false, inWeb: inWeb))
+            let node = Node(el: el, name: name, role: role, point: point, disabled: enabled == false, inWeb: inWeb)
+            nodes.append(node)
+            if let stop = stop, stop(node) { done = true; return }
         }
         if let kids = value(values, 8) as? [AXUIElement] {
             for k in kids { visit(k, depth + 1, inWeb) }
@@ -175,13 +222,18 @@ func walk(_ root: AXUIElement, maxDepth: Int = 40, maxNodes: Int = 8000) -> (nod
 }
 
 /// Named elements of the focused window. Wakes Chromium's page tree when needed.
-func frontTree() throws -> [Node] {
+func frontTree(stop: ((Node) -> Bool)? = nil, visibleOnly: Bool = false) throws -> [Node] {
+    try requireUnlocked()
     guard AXIsProcessTrusted() else { throw Fail(message: "reading the screen needs the Accessibility permission — run: macuse check") }
     guard let app = focusedApp() else { throw Fail(message: "the frontmost app has no window") }
     guard let win = app.element(kAXFocusedWindowAttribute) ?? app.element(kAXMainWindowAttribute) else {
         throw Fail(message: "the frontmost app has no window")
     }
-    var result = walk(win)
+    var clip: CGRect? = nil
+    if visibleOnly, let o = axPoint(win.attr(kAXPositionAttribute)), let sz = axSize(win.attr(kAXSizeAttribute)) {
+        clip = CGRect(origin: o, size: sz).intersection(CGDisplayBounds(CGMainDisplayID()))
+    }
+    var result = walk(win, stop: stop, clip: clip)
     let bundle = NSRunningApplication(processIdentifier: app.pid)?.bundleIdentifier ?? ""
     if !result.sawWeb, chromium.contains(where: { bundle.hasPrefix($0) }) {
         // Chrome builds the page's tree only once an assistive app asks, with the
@@ -197,7 +249,7 @@ func frontTree() throws -> [Node] {
             let deadline = now() + 5
             while !result.sawWeb && now() < deadline {
                 pause(250)
-                result = walk(win)
+                result = walk(win, stop: stop, clip: clip)
             }
         }
     }
@@ -235,8 +287,14 @@ func line(_ n: Node) -> String {
 func pick(_ needle: String, fields: Bool = false) throws -> Node {
     let deadline = now() + Double(env("MACUSE_WAIT", 2))
     var found: Node? = nil
+    let exact = needle.lowercased().trimmingCharacters(in: .whitespaces)
+    // The first exact, usable match in tree order is what ranking would pick
+    // anyway: stop reading the window there.
+    let good = { (n: Node) -> Bool in
+        n.point != nil && !n.disabled && n.name.lowercased() == exact && (!fields || inputRoles.contains(n.role))
+    }
     while true {
-        var nodes = (try? frontTree()) ?? []
+        var nodes = (try? frontTree(stop: good)) ?? []
         nodes = nodes.filter { $0.point != nil && !$0.disabled }
         if fields { nodes = nodes.filter { inputRoles.contains($0.role) } }
         found = rank(nodes, needle).first
@@ -244,14 +302,16 @@ func pick(_ needle: String, fields: Bool = false) throws -> Node {
         Watch().settle(first: 150, quiet: 40, max: 300)
     }
     guard var best = found else { throw Fail(message: "no element matching: \(needle)") }
-    if let p = best.point, !onScreen(p) {
+    if let p = best.point, !reaches(p, best.el) {
+        // Off screen or covered: ask for it to be scrolled into view, then look again.
         best.el.perform("AXScrollToVisible")
-        pause(150)
+        pause(200)
         if let pos = axPoint(best.el.attr(kAXPositionAttribute)), let size = axSize(best.el.attr(kAXSizeAttribute)) {
             best = Node(el: best.el, name: best.name, role: best.role,
                         point: CGPoint(x: (pos.x + size.width / 2).rounded(), y: (pos.y + size.height / 2).rounded()),
                         disabled: best.disabled, inWeb: best.inWeb)
         }
+        best.reachable = reaches(best.point!, best.el)
     }
     return best
 }
@@ -718,6 +778,7 @@ func upload(_ path: String) throws -> String {
 // MARK: - Screenshot
 
 func shot(_ name: String) throws -> String {
+    try requireUnlocked()
     guard !name.contains("/"), !name.hasPrefix(".") else { throw Fail(message: "shot name must be a plain file name", code: 2) }
     let dir = ProcessInfo.processInfo.environment["MACUSE_SHOTS"] ?? NSTemporaryDirectory()
     let raw = (dir as NSString).appendingPathComponent("\(name)_raw.png")
@@ -760,8 +821,8 @@ LOOK
   shot [name]              capture the main display, scaled so pixels = click points
   where <text>             elements matching <text>, best first, with centre points
   waitfor <text> [secs]    return as soon as <text> appears (default 10 s)
-  read                     the front window's text in order — on a web page, the page
-  ui                       named elements of the front window
+  read [--all]             the visible text in order — on a web page, the page
+  ui [--all]               named elements you can see (--all: offscreen too)
   apps · menus <app> · pos
 
 ACT  (each one waits for the app to react and reports what changed)
@@ -822,13 +883,13 @@ func execute(_ args: [String]) throws -> String {
         }
 
     case "ui":
-        let lines = dedupe(try frontTree().map(line))
+        let lines = dedupe(try frontTree(visibleOnly: !a.contains("--all")).map(line))
         guard !lines.isEmpty else { throw Fail(message: "no named elements in the front window") }
         return lines.count > 200 ? (lines.prefix(200) + ["… \(lines.count - 200) more — narrow it with: where <text>"]).joined(separator: "\n")
                                  : lines.joined(separator: "\n")
 
     case "read":
-        let nodes = try frontTree()
+        let nodes = try frontTree(visibleOnly: !a.contains("--all"))
         let source = nodes.contains { $0.inWeb } ? nodes.filter { $0.inWeb } : nodes
         var lines: [String] = []
         for n in source where textRoles.contains(n.role) {
@@ -863,6 +924,16 @@ func execute(_ args: [String]) throws -> String {
         }
         guard let needle = a.first else { throw Fail(message: "\(cmd) needs X Y or a name", code: 2) }
         let target = try pick(needle)
+        if !target.reachable {
+            // Never click a point that would land on something else.
+            guard cmd == "click" else {
+                throw Fail(message: "\(label(target)) is covered or off screen — a \(cmd) there would hit something else")
+            }
+            return try acting {
+                target.el.perform(kAXPressAction, timeout: 0.3)
+                return "pressed \(label(target)) through accessibility — it's covered or off screen, a click there would hit something else"
+            }
+        }
         return try acting {
             click(target.point!, button: button, count: count)
             return "\(cmd)ed \(label(target)) at \(Int(target.point!.x)) \(Int(target.point!.y))"
@@ -883,13 +954,32 @@ func execute(_ args: [String]) throws -> String {
         try requireTrust("fill")
         guard a.count == 2 else { throw Fail(message: "fill needs a field name and the text: fill \"Email\" \"me@example.com\"", code: 2) }
         let field = try pick(a[0], fields: true)
+        let want = a[1]
+        // Letters and digits only: a field may format what it gets ("333 1234").
+        let norm = { (s: String) in s.lowercased().filter { $0.isLetter || $0.isNumber } }
+        let holds = { norm(field.el.text(kAXValueAttribute)) == norm(want) }
         return try acting {
             // Focus it like a person, select what's there, paste: the page gets
             // real input events, not a value set behind its back.
-            click(field.point!)
-            pause(60)
-            try hotkey("cmd", "a")
-            paste(a[1])
+            func put() throws {
+                if field.reachable { click(field.point!) }
+                else { AXUIElementSetAttributeValue(field.el, kAXFocusedAttribute as CFString, kCFBooleanTrue) }
+                pause(60)
+                try hotkey("cmd", "a")
+                paste(want)
+            }
+            try put()
+            if field.role == "SecureTextField" { return "filled \(label(field))" }
+            // Safari's AutoFill can swallow the first paste into a contact field
+            // (the text stays a preview and is dropped). Filling again with the
+            // same text is harmless, so check and do it once more.
+            if !until(0.8, holds) {
+                try put()
+                if !until(0.8, holds) {
+                    return "filled \(label(field)) — but it shows \"\(String(flat(field.el.text(kAXValueAttribute)).prefix(60)))\""
+                }
+                return "filled \(label(field)) (second try: the first didn't stick)"
+            }
             return "filled \(label(field))"
         }
 
@@ -962,6 +1052,7 @@ func execute(_ args: [String]) throws -> String {
 
     case "check":
         var lines: [String] = []
+        if screenLocked() { lines.append("screen            LOCKED — unlock it, then run check again") }
         let screen = CGPreflightScreenCaptureAccess()
         lines.append("screen recording  " + (screen ? "ok" : "MISSING — System Settings > Privacy & Security > Screen Recording"))
         // Posted events can be dropped without a word, so measure one.
