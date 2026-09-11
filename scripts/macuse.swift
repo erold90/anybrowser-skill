@@ -367,6 +367,7 @@ final class Watch {
         kAXMenuOpenedNotification, kAXMenuClosedNotification, kAXSheetCreatedNotification,
         kAXUIElementDestroyedNotification, kAXSelectedTextChangedNotification, kAXApplicationDeactivatedNotification,
         kAXLayoutChangedNotification, kAXSelectedChildrenChangedNotification,
+        kAXSelectedRowsChangedNotification, kAXSelectedCellsChangedNotification, kAXRowCountChangedNotification,
     ]
 
     init() {
@@ -414,9 +415,26 @@ final class Watch {
 /// the AXWindows list and used to read as a window opening or closing.
 func realWindows(_ app: AXUIElement) -> [AXUIElement] {
     ((app.attr(kAXWindowsAttribute) as? [AXUIElement]) ?? []).filter { w in
+        // Finder lists its desktop among its windows; it isn't one.
+        if w.role == "ScrollArea" { return false }
         guard let size = axSize(w.attr(kAXSizeAttribute)) else { return true }
         return size.width >= 150 && size.height >= 60
     }
+}
+
+/// What is selected in a list, table or icon view that has the focus: "bozza.txt".
+func selectionNames(_ view: AXUIElement) -> [String] {
+    func label(_ e: AXUIElement, _ depth: Int) -> String {
+        for a in [kAXTitleAttribute, kAXDescriptionAttribute] { let t = e.text(a); if !t.isEmpty { return t } }
+        if ["TextField", "StaticText"].contains(e.role) { let t = e.text(kAXValueAttribute); if !t.isEmpty { return t } }
+        guard depth < 3 else { return "" }
+        for c in e.children { let t = label(c, depth + 1); if !t.isEmpty { return t } }
+        return ""
+    }
+    AXUIElementSetMessagingTimeout(view, 0.3)
+    let picked = (view.attr(kAXSelectedRowsAttribute) as? [AXUIElement])
+        ?? (view.attr(kAXSelectedChildrenAttribute) as? [AXUIElement]) ?? []
+    return picked.prefix(3).map { String(flat(label($0, 0)).prefix(50)) }.filter { !$0.isEmpty }
 }
 
 /// The words and buttons of a small dialog — an alert inside a page, a sheet, an
@@ -484,6 +502,7 @@ struct Snap {
     var focus = ""
     var value = ""
     var dialog = ""
+    var selection = ""
 
     static func take() -> Snap {
         var s = Snap()
@@ -498,8 +517,9 @@ struct Snap {
             focusedWindow = w
             s.windowRef = w
             s.window = w.text(kAXTitleAttribute)
+            if w.role == "ScrollArea" && w.text(kAXTitleAttribute).isEmpty { s.window = "the desktop" }
             let role = w.role, sub = stripAX(w.text(kAXSubroleAttribute)), id = w.text(kAXIdentifierAttribute)
-            s.windowKind = [role == "Window" ? "" : role.lowercased(),
+            s.windowKind = [role == "Window" || role == "ScrollArea" ? "" : role.lowercased(),
                             ["StandardWindow", "Unknown", ""].contains(sub) ? "" : sub.lowercased(),
                             id == "open-panel" ? "file dialog" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
         }
@@ -527,6 +547,10 @@ struct Snap {
                 s.focus = context.isEmpty ? "[\(role)]" : "[\(role)] in \"\(context)\""
             }
             if inputRoles.contains(role), role != "SecureTextField" { s.value = String(flat(f.text(kAXValueAttribute)).prefix(80)) }
+            if ["Outline", "Table", "List", "Browser", "Grid"].contains(role) {
+                let names = selectionNames(f)
+                if !names.isEmpty { s.selection = names.map { "\"\($0)\"" }.joined(separator: ", ") }
+            }
             // An alert drawn inside a page takes the focus into an unnamed group.
             if ["Group", "Sheet", "Dialog"].contains(role) || s.focus.hasPrefix("[Group]") {
                 var e: AXUIElement? = f
@@ -566,6 +590,7 @@ struct Snap {
         if dialog != b.dialog && !dialog.isEmpty { parts.append(dialog) }
         if focus != b.focus && !focus.isEmpty && dialog.isEmpty { parts.append("focus: \(focus)") }
         if value != b.value && !value.isEmpty { parts.append("value: \"\(value)\"") }
+        if selection != b.selection && !selection.isEmpty { parts.append("selected: \(selection)") }
         // Only a menu still showing counts: select opens and closes one on its way.
         if (watch.kinds[kAXMenuOpenedNotification] ?? 0) > 0,
            menuWindowOpen(pid) || (focusedApp(timeout: 0.3)?.children.contains { $0.role == "Menu" } ?? false) {
@@ -581,7 +606,9 @@ struct Snap {
             // come from the address bar and the file dialog.)
             for el in watch.changed {
                 AXUIElementSetMessagingTimeout(el, 0.3)
-                guard ["StaticText", "Heading", "Cell", "Link", "Button"].contains(el.role) else { continue }
+                // Plain text only: buttons and cells retitle themselves (column headers,
+                // style menus) without anything a person would call a result.
+                guard ["StaticText", "Heading"].contains(el.role), parts.filter({ $0.hasPrefix("changed:") }).count < 2 else { continue }
                 if let w = el.element(kAXWindowAttribute), let front = windowRef, !CFEqual(w, front) { continue }
                 var t = el.text(kAXValueAttribute)
                 if t.isEmpty { t = el.text(kAXTitleAttribute) }
@@ -1191,7 +1218,8 @@ ACT  (each one waits for the app to react and reports what changed)
   menu <app> <menu> [<submenu>...] <item>
   focus <app> · raise <window title> · open <url> [app] · upload <file>
   hover X Y | <name>       rest the pointer there: hover menus, tooltips
-  move X Y · drag X1 Y1 X2 Y2 · scroll N [dx]
+  drag X1 Y1 X2 Y2 | <name> <name>   press, travel, release — says whether it left
+  move X Y · scroll N [dx]
 
   do "<cmd>" "<cmd>" ...   run a sequence in one call; stops at the first failure
   do -                     the same, one step per line from stdin
@@ -1323,7 +1351,7 @@ func execute(_ args: [String]) throws -> String {
             let t: String
             if let v = n.value { t = "\(flat(n.name)): \"\(v)\"" }            // Name: "Grace Hopper"
             else if let on = n.on { t = "\(flat(n.name)): \(on ? "on" : "off")" }
-            else if textRoles.contains(n.role) { t = flat(n.name) }
+            else if textRoles.contains(n.role) || inputRoles.contains(n.role) { t = flat(n.name) }
             else { continue }
             if !t.isEmpty && lines.last != t { lines.append(t) }
         }
@@ -1522,8 +1550,26 @@ func execute(_ args: [String]) throws -> String {
 
     case "drag":
         try requireTrust("drag")
-        let from = try point(a, 0), to = try point(a, 2)
-        return try acting { drag(from, to); return "" }
+        // drag X1 Y1 X2 Y2 · drag <name> <name> · either end may be "X Y" in one argument
+        if a.count == 4, a.allSatisfy({ Double($0) != nil }) {
+            let from = try point(a, 0), to = try point(a, 2)
+            return try acting { drag(from, to); return "dragged \(Int(from.x)) \(Int(from.y)) → \(Int(to.x)) \(Int(to.y))" }
+        }
+        guard a.count == 2 else { throw Fail(message: "drag takes X1 Y1 X2 Y2, or two names: drag \"report.pdf\" \"Archive\"", code: 2) }
+        func end(_ arg: String) throws -> (CGPoint, String, Node?) {
+            let parts = arg.split(whereSeparator: { $0.isWhitespace })
+            if parts.count == 2, let x = Double(parts[0]), let y = Double(parts[1]) { return (CGPoint(x: x, y: y), "\(Int(x)) \(Int(y))", nil) }
+            let node = try pick(arg)
+            guard node.reachable else { throw Fail(message: "\(label(node)) is covered or off screen — scroll it into view to drag") }
+            return (node.point!, label(node), node)
+        }
+        let (from, fromLabel, source) = try end(a[0])
+        let (to, toLabel, _) = try end(a[1])
+        let head = try acting { drag(from, to); return "dragged \(fromLabel) onto \(toLabel)" }
+        // Did it leave? An element with the same name still in the same spot means the drop didn't take.
+        guard let moved = source else { return head }
+        let still = (try? frontTree())?.contains { $0.name == moved.name && $0.role == moved.role && $0.point == moved.point } ?? false
+        return head + (still ? " · \"\(moved.name)\" is still where it was" : " · \"\(moved.name)\" is no longer where it was")
 
     case "scroll":
         try requireTrust("scroll")

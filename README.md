@@ -24,13 +24,18 @@ accessibility notifications while it acts, waits for the app to settle, and
 answers on the same line:
 
 ```
-clicked Upload file  [StaticText] at 96 439 → window: "" (sheet, file dialog) · focus: [List]
 filled Email  [TextField] → focus: Email  [TextField] · value: "ada@example.com"
-clicked Show alert  [Button] at 128 404 → new window: "127.0.0.1:8765 says"
+clicked Show alert  [Button] at 81 405 → dialog: "Test alert" — buttons: OK
+clicked Upload file  [StaticText] at 306 433 → window: (untitled) (sheet, file dialog)
+clicked Send  [Button] at 64 531 → page: "status: sent name=Ada plan=Pro file=logo.png"
+hotkey cmd w → now showing "YouTube"
 ```
 
 An exit code of 0 only means an event was sent. The report is what tells the
 agent it landed — without a screenshot, which costs a second and ~1,700 tokens.
+Web pages don't announce their text changing, so in a browser (or an Electron
+app) macuse compares the visible page before and after: the `page:` line is the
+status message, the error or the result the click produced.
 
 **A whole flow in one call.** The slow part of an agent driving a GUI isn't the
 click, it's the round trip to the model between clicks. `do` runs a sequence in
@@ -103,7 +108,8 @@ everything, Screen Recording for `shot` — then restart your terminal.
 | `focus <app>` · `raise <title>` | Front an app by its localized name, bundle name or id · a window by (part of) its title |
 | `open <url> [app]` · `upload <file>` | A web page · answer the Open dialog |
 | `hover X Y` or `<name>` | Rest the pointer on something: hover menus, tooltips |
-| `move X Y` · `drag X1 Y1 X2 Y2` · `scroll N [dx]` | The pointer |
+| `drag X1 Y1 X2 Y2` or `<name> <name>` | Press, travel, release — by name, it also says whether the item left its place |
+| `move X Y` · `scroll N [dx]` | The pointer |
 | `do "<cmd>" "<cmd>" …` · `do -` | A sequence in one call, stopping at the first failure · the same from stdin |
 | `check` | Which permissions are missing |
 
@@ -123,6 +129,13 @@ ignore scripted values, browsers other than Chrome.
 
 ## Tests
 
+The test that matters most isn't in this folder: a fresh agent, given only
+`SKILL.md` and a real task, reporting where it got stuck. Two rounds — a TextEdit
+document (5 steps, 10 calls), a web form with an alert, a pop-up and the file
+dialog (8 steps, 5 calls), and a Finder rename-and-drag (6 steps) — shaped `menus <app> <menu>`, `read` with values, `drag` by
+name, the `dialog:`/`page:`/`selected:`/`now showing` reports and most of SKILL.md.
+
+
 - `tests/check.sh` — build, install, validation, and that no argument ever runs as code. Doesn't drive your apps.
 - `tests/web.sh` — opens `tests/page.html` in a new Safari window and a throwaway
   Chrome profile, runs the whole flow as one `do`, and checks the page's own
@@ -138,9 +151,10 @@ ignore scripted values, browsers other than Chrome.
   test, the ChatGPT desktop app showed its window frame and nothing inside.
 - **Names follow the system language.** On an Italian Mac it's
   `menu TextEdit Formato Font "Mostra font"`. Read `menus` or `ui` first.
-- **Not every change has a name.** In our tests neither Safari nor Chrome
-  announced text changing inside a page, so a report can say the app reacted
-  without saying how; add a `read` step when the result matters.
+- **Not every change has a name.** The page comparison covers what's visible in
+  the front window; a change off screen, or in an app that neither announces it
+  nor is a browser, shows up as "the app reacted" — add a `read` step when the
+  result matters.
 - **`click`, `fill` and `keys` borrow your mouse and keyboard** while they run.
   `press` doesn't.
 - **`shot` captures one display at a time** (`--display N`).

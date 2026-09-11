@@ -35,6 +35,7 @@ that already says what changed. The forms it takes:
 | Report | Means |
 |---|---|
 | `focus: Email [TextField] · value: "…"` | where the keyboard is now, and what that field holds |
+| `selected: "report.pdf"` | what is now selected in a list, table or icon view |
 | `new window: "…"` · `window: "…" (sheet)` · `(file dialog)` | a window or dialog opened, or the front one changed |
 | `now showing "YouTube"` | the same window shows something else: a tab switched or closed, a page loaded |
 | `window closed — now in "…"` · `no window open` | a window went away |
@@ -45,6 +46,9 @@ that already says what changed. The forms it takes:
 | `menu open` | a menu or pop-up is still showing |
 | `the app reacted (…), nothing moved in focus` | something changed the report can't name: `read` if it matters |
 | `no reaction seen — confirm with read (or shot)` | the click may have missed, or the app draws its own UI |
+
+A window with no title shows as `(untitled)`; Finder's desktop as `the desktop`.
+`drag <name> <name>` adds whether the dragged item is still where it was.
 
 Exit codes: `0` done, `1` failed or not found (the message says which), `2` bad arguments.
 
@@ -82,8 +86,9 @@ elements tie, the first in the window wins: `where` shows the candidates.
 
 `click <name>` moves the real pointer. `press <name>` triggers the control
 through accessibility without touching the pointer — use it when the user is
-working on the same Mac. Names follow the system language (`Formato`, not
-`Format`, on an Italian Mac): read `menus <app>` or `ui` rather than guessing.
+working on the same Mac. Names follow the system language, but not all of them
+are translated — on an Italian Mac TextEdit has `Formato`, while Finder's first
+menu is still `File`: read `menus <app>` or `ui` rather than guessing.
 `focus` accepts an app's bundle name too, so `focus "System Settings"` works in
 any language.
 
@@ -109,6 +114,18 @@ depends on the document: **Don't Save** (`Non salvare`) for an edited file, but
 asked you to discard their document, pressing that button *is* the discard they
 asked for; otherwise ask before choosing it. The report ends
 `→ window closed — …` when it worked.
+
+## Files in Finder
+
+```
+mac.sh do 'click "draft.txt"' 'key return' 'hotkey cmd a' 'type "final.txt"' 'key return' \
+          'menu Finder File "New Folder"' 'type Archive' 'key return' \
+          'drag final.txt Archive'
+```
+
+Rename with `key return` on the selected item, then `hotkey cmd a` before typing:
+Finder preselects the name without its extension, so typing alone gives
+`final.txt.txt`. `read` lists the file names of the front window.
 
 ## A whole task
 
@@ -151,7 +168,7 @@ LOOK   shot [name] [--window|--region X Y W H|--display N] · windows · where <
 ACT    click|dclick|rclick X Y|<name> · press <name> · fill <field> "text" · select <menu> <option>
        type "text" · keys "text" · key <name> · hotkey "<mods>" <key>
        menu <app> <menu> [<submenu>...] <item> · focus <app> · raise <title> · open <url> [app] · upload <file>
-       hover X Y|<name> · move X Y · drag X1 Y1 X2 Y2 · scroll N [dx]
+       hover X Y|<name> · move X Y · drag X1 Y1 X2 Y2|<name> <name> · scroll N [dx]
 CHAIN  do "<cmd>" "<cmd>" ...  ·  do -   (steps from stdin)
 ```
 

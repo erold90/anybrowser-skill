@@ -59,6 +59,7 @@ t "do runs every step when all pass"    says "\[2\] pos" "$M" do "pos" "pos"
 t "do - reads steps from stdin"         bash -c "printf '# comment\npos\n\npos\n' | \"$M\" do - | grep -q '\[2\] pos'"
 t "select needs a menu and an option"   says "select needs a menu and an option" "$M" select Plan
 t "waitgone returns when absent"        says "gone:" "$M" waitgone "zz-no-such-element-zz" 1
+t "drag needs coordinates or two names"  says "drag takes X1 Y1 X2 Y2, or two names" "$M" drag onlyone
 t "menus lists a menu's items"          bash -c "\"$M\" menus Finder \"\$(\"$M\" menus Finder | sed -n 3p)\" | grep -q ."
 
 echo "pass=$pass fail=$fail"
