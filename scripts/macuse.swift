@@ -1231,7 +1231,9 @@ ACT  (each one waits for the app to react and reports what changed)
   keys "text"              real keystrokes, any characters
   key <name> · hotkey "cmd shift" s
   menu <app> <menu> [<submenu>...] <item>
-  focus <app> · raise <window title> · open <url> [app] · upload <file>
+  focus <app> (launches it if needed) · quit <app> · raise <window title>
+  window minimize|restore|maximize|fullscreen|close [title] · window move X Y [title] · window resize W H [title]
+  open <url> [app] · upload <file>
   hover X Y | <name>       rest the pointer there: hover menus, tooltips
   drag X1 Y1 X2 Y2 | <name> <name>   press, travel, release — says whether it left
   move X Y · scroll N [dx]
@@ -1308,6 +1310,164 @@ func execute(_ args: [String]) throws -> String {
         }
         guard !lines.isEmpty else { throw Fail(message: "no windows") }
         return lines.joined(separator: "\n")
+
+    case "quit":
+        guard let name = a.first else { throw Fail(message: "quit needs an app name", code: 2) }
+        guard let app = runningApp(name) else { return "\(name) isn't running" }
+        let pid = app.processIdentifier
+        return try acting {
+            // Like Cmd+Q: the app may stop to ask about unsaved work — the report shows that dialog.
+            app.terminate()
+            if until(3, { NSRunningApplication(processIdentifier: pid) == nil || app.isTerminated }) {
+                return "quit \(app.localizedName ?? name)"
+            }
+            return "asked \(app.localizedName ?? name) to quit — it's still open (waiting on a dialog?)"
+        }
+
+    case "window":
+        // window minimize|restore|maximize|fullscreen|close [title] · window move X Y [title] · window resize W H [title]
+        try requireTrust("window")
+        guard let action = a.first else {
+            throw Fail(message: "window needs an action: minimize, restore, close, maximize, fullscreen, move X Y, resize W H", code: 2)
+        }
+        var rest = Array(a.dropFirst())
+        var numbers: [Double] = []
+        if action == "move" || action == "resize" {
+            guard rest.count >= 2, let x = Double(rest[0]), let y = Double(rest[1]) else {
+                throw Fail(message: "window \(action) needs two numbers: window \(action) \(action == "move" ? "X Y" : "W H") [title]", code: 2)
+            }
+            numbers = [x, y]
+            rest = Array(rest.dropFirst(2))
+        }
+        let wanted = rest.joined(separator: " ").lowercased()
+        // The window: by (part of) its title across apps, or the front one.
+        var target: (NSRunningApplication?, AXUIElement)? = nil
+        if wanted.isEmpty {
+            if let app = focusedApp(), let w = app.element(kAXFocusedWindowAttribute) {
+                target = (NSRunningApplication(processIdentifier: app.pid), w)
+            }
+        } else {
+            func search() {
+                var bestRank = Int.max
+                for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+                    let ax = AXUIElementCreateApplication(app.processIdentifier)
+                    AXUIElementSetMessagingTimeout(ax, 0.5)
+                    for w in realWindows(ax) {
+                        let t = w.text(kAXTitleAttribute).lowercased()
+                        let r = t == wanted ? 0 : t.hasPrefix(wanted) ? 1 : t.contains(wanted) ? 2 : -1
+                        if r >= 0 && r < bestRank { bestRank = r; target = (app, w) }
+                    }
+                }
+            }
+            search()
+            // A window can be mid-transition (leaving full screen takes ~1.5 s, during
+            // which it's in no list): give it the same wait a lookup by name gets.
+            let deadline = now() + Double(env("MACUSE_WAIT", 2))
+            while target == nil && now() < deadline {
+                if CFRunLoopRunInMode(.defaultMode, 0.2, false) == .finished { pause(200) }
+                search()
+            }
+            // Some apps (Calculator, SwiftUI) hide their windows from accessibility while
+            // in the background. The window server still lists them: front that app, look again.
+            if target == nil,
+               let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
+               let hit = list.first(where: { (($0[kCGWindowName as String] as? String) ?? "").lowercased().contains(wanted)
+                                              && ($0[kCGWindowLayer as String] as? Int) == 0 }),
+               let pid = hit[kCGWindowOwnerPID as String] as? pid_t, let app = NSRunningApplication(processIdentifier: pid) {
+                app.unhide()                                           // a hidden app's windows aren't on screen at all
+                app.activate(options: [])
+                _ = until(2) { NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }
+                search()
+            }
+        }
+        guard let (owner, win) = target else {
+            throw Fail(message: wanted.isEmpty ? "the frontmost app has no window" : "no window titled like: \(rest.joined(separator: " "))")
+        }
+        let title = win.text(kAXTitleAttribute).isEmpty ? "(untitled)" : "\"\(win.text(kAXTitleAttribute))\""
+        func where_() -> String {
+            guard let f = frame(win) else { return "" }
+            return " — now at \(Int(f.minX)) \(Int(f.minY)), \(Int(f.width))×\(Int(f.height))"
+        }
+        func set(_ attribute: String, _ value: CFTypeRef) throws {
+            let r = AXUIElementSetAttributeValue(win, attribute as CFString, value)
+            if r == .success { return }
+            if (win.attr("AXFullScreen") as? Bool) == true && attribute != "AXFullScreen" {
+                throw Fail(message: "\(title) is in full screen — window fullscreen \(rest.joined(separator: " ")) leaves it first")
+            }
+            throw Fail(message: "\(title) doesn't allow that (\(r.rawValue))")
+        }
+        switch action {
+        case "minimize", "minimise":
+            return try acting { try set(kAXMinimizedAttribute, kCFBooleanTrue); return "minimized \(title)" }
+        case "restore":
+            return try acting {
+                try set(kAXMinimizedAttribute, kCFBooleanFalse)
+                win.perform(kAXRaiseAction, timeout: 0.5)
+                owner?.activate(options: [])
+                return "restored \(title)"
+            }
+        case "move":
+            var p = CGPoint(x: numbers[0], y: numbers[1])
+            guard let v = AXValueCreate(.cgPoint, &p) else { throw Fail(message: "bad position") }
+            try set(kAXPositionAttribute, v)
+            pause(80)
+            let kept = frame(win).map { abs($0.minX - numbers[0]) > 2 || abs($0.minY - numbers[1]) > 2 } ?? false
+            return "moved \(title)" + where_() + (kept ? " — not exactly there: macOS keeps windows below the menu bar and on screen" : "")
+        case "resize":
+            var size = CGSize(width: numbers[0], height: numbers[1])
+            guard let v = AXValueCreate(.cgSize, &size) else { throw Fail(message: "bad size") }
+            try set(kAXSizeAttribute, v)
+            pause(80)
+            let kept = frame(win).map { abs($0.width - numbers[0]) > 2 || abs($0.height - numbers[1]) > 2 } ?? false
+            return "resized \(title)" + where_() + (kept ? " — the app didn't take that size (a zoomed window, or its own limits)" : "")
+        case "maximize", "maximise":
+            // Not the green button: on current macOS that means full screen. Fill the
+            // screen's usable area (below the menu bar, beside the Dock) instead.
+            guard let screen = NSScreen.main else { throw Fail(message: "no screen") }
+            let visible = screen.visibleFrame, full = CGDisplayBounds(CGMainDisplayID())
+            var origin = CGPoint(x: visible.minX, y: full.height - visible.maxY)      // AppKit is bottom-up, accessibility top-down
+            var size = CGSize(width: visible.width, height: visible.height)
+            guard let pv = AXValueCreate(.cgPoint, &origin), let sv = AXValueCreate(.cgSize, &size) else { throw Fail(message: "bad frame") }
+            try set(kAXPositionAttribute, pv)
+            try set(kAXSizeAttribute, sv)
+            pause(80)
+            return "maximized \(title)" + where_()
+        case "close":
+            return try acting {
+                // Cmd+W on the window brought to the front is what every app honours;
+                // pressing the red button through accessibility is only the fallback
+                // (TextEdit ignores it). Done when the window is gone or a sheet asks
+                // about saving — the sheet is a window of its own, not a child.
+                let pid = owner?.processIdentifier ?? 0
+                func settled() -> Bool {
+                    let ax = AXUIElementCreateApplication(pid)
+                    AXUIElementSetMessagingTimeout(ax, 0.3)
+                    let gone = !realWindows(ax).contains { CFEqual($0, win) }
+                    let asking = ax.element(kAXFocusedWindowAttribute)?.role == "Sheet" || win.children.contains { $0.role == "Sheet" }
+                    return gone || asking
+                }
+                owner?.activate(options: [.activateAllWindows])
+                win.perform(kAXRaiseAction, timeout: 0.5)
+                _ = until(1.5) { NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }
+                try hotkey("cmd", "w")
+                if !until(1, settled), let b = win.element(kAXCloseButtonAttribute) {
+                    b.perform(kAXPressAction, timeout: 0.5)
+                    _ = until(1, settled)
+                }
+                return "closed \(title)"
+            }
+        case "fullscreen":
+            let on = (win.attr("AXFullScreen") as? Bool) ?? false
+            return try acting {
+                try set("AXFullScreen", on ? kCFBooleanFalse : kCFBooleanTrue)
+                // The animation takes a second or two; the next step needs it finished.
+                _ = until(4) { (win.attr("AXFullScreen") as? Bool) == !on && frame(win) != nil }
+                pause(400)
+                return "\(on ? "left" : "entered") full screen: \(title)" + where_()
+            }
+        default:
+            throw Fail(message: "unknown window action: \(action) — minimize, restore, close, maximize, fullscreen, move X Y, resize W H", code: 2)
+        }
 
     case "raise":
         try requireTrust("raise")
@@ -1560,7 +1720,9 @@ func execute(_ args: [String]) throws -> String {
         guard let needle = a.first else { throw Fail(message: "hover needs X Y or a name", code: 2) }
         let target = try pick(needle)
         guard target.reachable else { throw Fail(message: "\(label(target)) is covered or off screen — nothing to hover") }
-        return try acting { glide(to: target.point!); return "hovering over \(label(target))" }
+        let report = try acting { glide(to: target.point!); return "hovering over \(label(target))" }
+        // Most things don't react to a pointer resting on them; that isn't a failure.
+        return report.replacingOccurrences(of: " → no reaction seen — confirm with read (or shot) before building on it", with: "")
 
     case "move":
         try requireTrust("move")

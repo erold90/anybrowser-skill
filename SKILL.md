@@ -79,6 +79,8 @@ so no `sleep` between steps.
 | A menu's items | `menus TextEdit` (the bar) · `menus TextEdit Format Font` (that submenu, `▸` = has a submenu) |
 | Anything the tree can't see | `shot --window` (smaller than the whole screen), read it, `click X Y` — saved as `$TMPDIR/shot.png` unless you pass a name or an absolute `.png` path |
 | Another window | `windows` · `raise "Invoice"` |
+| Arrange windows | `window move 0 25` · `window resize 800 600` · `window maximize` · `window minimize` · `window restore "Invoice"` · `window fullscreen` · `window close "Invoice"` — front window, or the one whose title matches |
+| Apps | `focus Calculator` (launches it) · `quit Calculator` (asks like Cmd+Q; unsaved work shows up as a `dialog:`) |
 
 Names match exact first, then by prefix, then anywhere, among enabled elements —
 `click Send` picks "Send" over "Send draft", `click Sen` picks "Send". When two
@@ -176,7 +178,8 @@ LOOK   shot [name] [--window|--region X Y W H|--display N] · windows · where <
        read [--all] · ui [--all] [--page] · apps · menus <app> [<menu>...] · pos
 ACT    click|dclick|rclick X Y|<name> · press <name> · fill <field> "text" · select <menu> <option>
        type "text" · keys "text" · key <name> · hotkey "<mods>" <key>
-       menu <app> <menu> [<submenu>...] <item> · focus <app> · raise <title> · open <url> [app] · upload <file>
+       menu <app> <menu> [<submenu>...] <item> · focus <app> · quit <app> · raise <title> · open <url> [app] · upload <file>
+WINDOW window minimize|restore|maximize|fullscreen|close [title] · window move X Y [title] · window resize W H [title]
        hover X Y|<name> · move X Y · drag X1 Y1 X2 Y2|<name> <name> · scroll N [dx]
 CHAIN  do "<cmd>" "<cmd>" ...  ·  do -   (steps from stdin)
 ```

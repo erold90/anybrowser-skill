@@ -105,7 +105,8 @@ everything, Screen Recording for `shot` — then restart your terminal.
 | `type "text"` · `keys "text"` | Paste · real keystrokes, any characters |
 | `key <name>` · `hotkey "cmd shift" s` | Named keys · shortcuts on the current layout |
 | `menu <app> <menu> [<submenu>…] <item>` | A menu item by name, at any depth |
-| `focus <app>` · `raise <title>` | Front an app by its localized name, bundle name or id · a window by (part of) its title |
+| `focus <app>` · `quit <app>` · `raise <title>` | Front (or launch) an app by its localized name, bundle name or id · quit it like Cmd+Q · front a window by (part of) its title |
+| `window move X Y` · `resize W H` · `maximize` · `minimize` · `restore` · `fullscreen` · `close` `[title]` | Arrange the front window, or the one whose title matches — set directly through accessibility, no dragging; the report gives the resulting frame |
 | `open <url> [app]` · `upload <file>` | A web page · answer the Open dialog |
 | `hover X Y` or `<name>` | Rest the pointer on something: hover menus, tooltips |
 | `drag X1 Y1 X2 Y2` or `<name> <name>` | Press, travel, release — by name, it also says whether the item left its place |
