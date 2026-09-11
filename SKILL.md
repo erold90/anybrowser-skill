@@ -69,6 +69,8 @@ so no `sleep` between steps.
 through accessibility without touching the pointer — use it when the user is
 working on the same Mac. Names follow the system language (`Formato`, not
 `Format`, on an Italian Mac): read `menus <app>` or `ui` rather than guessing.
+`focus` accepts an app's bundle name too, so `focus "System Settings"` works in
+any language.
 
 ## Web pages
 
@@ -82,7 +84,8 @@ takes ~3 s.
 ## Typing
 
 - `type "text"` — paste: instant, any characters, clipboard restored after
-- `keys "text"` — real keystrokes one by one, any characters (accents too)
+- `keys "text"` — real keystrokes one by one, any characters (accents too); use it
+  for apps that listen to keys rather than text, like Calculator
 - `key esc` · `hotkey "cmd shift" s` — shortcuts follow the current keyboard layout
 
 ## Rules that keep this safe

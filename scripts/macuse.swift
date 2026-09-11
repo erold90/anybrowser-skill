@@ -103,12 +103,13 @@ func requireTrust(_ what: String) throws {
 /// no, the on-screen window list decides (always current, ~60 ms). The
 /// accessibility server's focused-application attribute failed for every app we
 /// measured, so it is only the last resort.
-func focusedApp() -> AXUIElement? {
+func focusedApp(timeout: Float = 2) -> AXUIElement? {
     func element(_ pid: pid_t) -> AXUIElement {
         let app = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(app, 2)
+        AXUIElementSetMessagingTimeout(app, timeout)
         return app
     }
+    CFRunLoopRunInMode(.defaultMode, 0, true)          // let NSWorkspace catch up on activations
     if let front = NSWorkspace.shared.frontmostApplication {
         let app = element(front.processIdentifier)
         if (app.attr(kAXFrontmostAttribute) as? Bool) != false { return app }
@@ -397,7 +398,9 @@ struct Snap {
 
     static func take() -> Snap {
         var s = Snap()
-        guard let app = focusedApp() else { return s }
+        // Short timeout: an app busy animating a sheet shouldn't stall the report
+        // for two seconds; a field that times out just stays empty.
+        guard let app = focusedApp(timeout: 0.4) else { return s }
         s.pid = app.pid
         s.app = appName(app.pid)
         s.windows = (app.attr(kAXWindowsAttribute) as? [AXUIElement])?.count ?? 0
@@ -461,7 +464,7 @@ struct Snap {
         }
         if parts.isEmpty {
             return watch.events > 0 ? "→ the app reacted (\(watch.events) accessibility events), nothing moved in focus"
-                                    : "→ no reaction seen — check before building on it"
+                                    : "→ no reaction seen — confirm with read (or shot) before building on it"
         }
         return "→ " + parts.joined(separator: " · ")
     }
@@ -504,6 +507,12 @@ func acting(_ body: () throws -> String) throws -> String {
     // A text field's value can reach the accessibility tree a beat after the edit.
     if after.value.isEmpty, after.focus.hasSuffix("[TextField]") || after.focus.hasSuffix("[TextArea]") {
         pause(80)
+        after = Snap.take()
+    }
+    // Silence can just be slowness: an app still launching, a settings pane
+    // loading in another process. Listen a little longer before saying so.
+    if watch.events == 0 && after.changes(since: before, watch: watch).hasPrefix("→ no reaction") {
+        watch.settle(first: 400, quiet: 90, max: 900)
         after = Snap.take()
     }
     let report = after.changes(since: before, watch: watch)
@@ -643,6 +652,14 @@ func typeKeys(_ text: String) {
     for ch in text {
         if ch == "\n" || ch == "\r" { tap(36); continue }
         if ch == "\t" { tap(48); continue }
+        // A character the keyboard has goes as that key — SwiftUI apps like
+        // Calculator read key codes and ignore bare Unicode. Anything else
+        // (emoji, symbols off the layout) goes as Unicode.
+        if let (code, shift) = Layout.keys[ch] {
+            tap(code, flags: shift ? .maskShift : [])
+            pause(6)
+            continue
+        }
         let units = Array(String(ch).utf16)
         for down in [true, false] {
             guard let e = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { continue }
@@ -688,11 +705,18 @@ func paste(_ text: String) {
 
 // MARK: - Apps, menus, dialogs
 
-func runningApp(_ name: String) -> NSRunningApplication? {
+/// Match an app by what a person or an agent would call it: its localized name
+/// ("Impostazioni di Sistema"), its bundle's file name ("System Settings"), or
+/// its bundle identifier.
+func matches(_ app: NSRunningApplication, _ name: String) -> Bool {
     let n = name.lowercased()
-    return NSWorkspace.shared.runningApplications.first {
-        $0.localizedName?.lowercased() == n || $0.bundleIdentifier?.lowercased() == n
-    }
+    return app.localizedName?.lowercased() == n
+        || app.bundleURL?.deletingPathExtension().lastPathComponent.lowercased() == n
+        || app.bundleIdentifier?.lowercased() == n
+}
+
+func runningApp(_ name: String) -> NSRunningApplication? {
+    NSWorkspace.shared.runningApplications.first { matches($0, name) }
 }
 
 func activate(_ name: String) throws {
@@ -706,12 +730,13 @@ func activate(_ name: String) throws {
         p.waitUntilExit()
         if p.terminationStatus != 0 { throw Fail(message: "no application named: \(name)") }
     }
-    let deadline = now() + 5
+    // Activation arrives as a notification: spin the run loop so it's seen.
+    let deadline = now() + 8
     while now() < deadline {
-        if let app = focusedApp(), appName(app.pid).lowercased() == name.lowercased()
-            || NSRunningApplication(processIdentifier: app.pid)?.bundleIdentifier?.lowercased() == name.lowercased() { return }
-        pause(40)
+        CFRunLoopRunInMode(.defaultMode, 0.05, false)
+        if let front = NSWorkspace.shared.frontmostApplication, matches(front, name) { return }
     }
+    throw Fail(message: "\(name) did not come to the front")
 }
 
 func menuItems(_ container: AXUIElement) -> [AXUIElement] {

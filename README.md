@@ -49,8 +49,10 @@ starts, lookup included; reading a window's element tree dropped from ~1 s
 
 **Real input.** Clicks and keystrokes are OS events, so pages see `isTrusted`
 events: on the test page every click and keystroke counts as real, none as
-synthetic, in Safari and Chrome. `keys` types any character — accents, `€`,
-emoji — as keystrokes; `hotkey` looks keys up on the current keyboard layout.
+synthetic, in Safari and Chrome. `keys` sends each character as the key that
+produces it on the current layout — SwiftUI apps like Calculator ignore anything
+else — and falls back to a Unicode keystroke for what the layout lacks (emoji);
+`hotkey` looks keys up the same way.
 `press` triggers a control through accessibility without moving the pointer, so
 you can keep using your mouse.
 
@@ -95,7 +97,7 @@ everything, Screen Recording for `shot` — then restart your terminal.
 | `type "text"` · `keys "text"` | Paste · real keystrokes, any characters |
 | `key <name>` · `hotkey "cmd shift" s` | Named keys · shortcuts on the current layout |
 | `menu <app> <menu> [<submenu>…] <item>` | A menu item by name, at any depth |
-| `focus <app>` · `open <url> [app]` · `upload <file>` | Front an app · a web page · answer the Open dialog |
+| `focus <app>` · `open <url> [app]` · `upload <file>` | Front an app by its localized name, bundle name or id · a web page · answer the Open dialog |
 | `move X Y` · `drag X1 Y1 X2 Y2` · `scroll N [dx]` | The pointer |
 | `do "<cmd>" "<cmd>" …` · `do -` | A sequence in one call, stopping at the first failure · the same from stdin |
 | `check` | Which permissions are missing |
@@ -138,7 +140,8 @@ ignore scripted values, browsers other than Chrome.
 ## Requirements
 
 macOS with the Swift compiler (Command Line Tools). Tested on macOS Sequoia 15.7,
-Intel. The GIF above predates the native engine.
+Intel, with an Italian system: Safari, Chrome, TextEdit, Finder, System Settings
+and Calculator. The GIF above predates the native engine.
 
 ## Licence
 
