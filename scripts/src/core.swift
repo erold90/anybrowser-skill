@@ -596,7 +596,7 @@ func pageState() -> PageState? {
 func pageChanges(_ before: PageState, _ after: PageState) -> [String] {
     guard CFEqual(before.web, after.web), before.text != after.text else { return [] }
     let clean = { (s: String) in flat(s.replacingOccurrences(of: "\u{FFFC}", with: " ")) }
-    if after.text.filter({ $0 == "\n" }).count * 150 >= after.text.count {
+    if !isChromiumWeb(after.web) {
         let old = Set(before.text.components(separatedBy: .newlines).map(clean))
         var seen = Set<String>()
         return after.text.components(separatedBy: .newlines).map(clean)
@@ -647,9 +647,15 @@ struct Snap {
         guard let app = focusedApp(timeout: 0.4) else { return s }
         s.pid = app.pid
         s.app = appName(app.pid)
-        s.windows = realWindows(app).count
+        // Floating bits with no window role of their own (Chrome's "Translate this
+        // page?" bubble) come and go by themselves: they count only while they
+        // have the focus — an alert does, a bubble doesn't.
+        let front = app.element(kAXFocusedWindowAttribute)
+        s.windows = realWindows(app).filter { w in
+            w.text(kAXSubroleAttribute) != "AXUnknown" || (front.map { CFEqual($0, w) } ?? false)
+        }.count
         var focusedWindow: AXUIElement? = nil
-        if let w = app.element(kAXFocusedWindowAttribute) {
+        if let w = front {
             focusedWindow = w
             s.windowRef = w
             s.window = w.text(kAXTitleAttribute)
@@ -717,12 +723,15 @@ struct Snap {
         return s
     }
 
-    func changes(since b: Snap, watch: Watch, pageAdded: [String] = [], web: Bool = false) -> String {
+    func changes(since b: Snap, watch: Watch, pageAdded: [String] = [], web: Bool = false, loaded: String? = nil) -> String {
         var parts: [String] = []
         let title = window.isEmpty ? "(untitled)" : "\"\(window)\""
         let kind = windowKind.isEmpty ? "" : " (\(windowKind))"
         let sameWindow = windowRef != nil && b.windowRef != nil && CFEqual(windowRef!, b.windowRef!)
-        if pid != b.pid {
+        let fileDialog = windowKind.contains("file dialog")
+        if let loaded = loaded, pid == b.pid, windows == b.windows {
+            parts.append(loaded)                                  // the new page's title and address say it all
+        } else if pid != b.pid {
             parts.append("app: \(b.app) → \(app)")
             parts.append(windows == 0 ? "no window open" : "window: \(title)\(kind)")
         } else if windows > b.windows {
@@ -745,10 +754,16 @@ struct Snap {
         } else if pid == b.pid && tabs.count < b.tabs.count && !b.tabs.isEmpty {
             parts.append("tab closed")
         }
+        if let loaded = loaded, !(pid == b.pid && windows == b.windows) { parts.append(loaded) }
         if dialog != b.dialog && !dialog.isEmpty { parts.append(dialog) }
-        if focus != b.focus && !focus.isEmpty && dialog.isEmpty { parts.append("focus: \(focus)") }
-        if value != b.value && !value.isEmpty { parts.append("value: \"\(value)\"") }
-        if selection != b.selection && !selection.isEmpty { parts.append("selected: \(selection)") }
+        if fileDialog {
+            // What the panel has selected inside itself is noise: say what comes next.
+            parts.append("pick the file with: upload <path>")
+        } else {
+            if focus != b.focus && !focus.isEmpty && dialog.isEmpty { parts.append("focus: \(focus)") }
+            if value != b.value && !value.isEmpty { parts.append("value: \"\(value)\"") }
+            if selection != b.selection && !selection.isEmpty { parts.append("selected: \(selection)") }
+        }
         // Only a menu still showing counts: select opens and closes one on its way.
         if (watch.kinds[kAXMenuOpenedNotification] ?? 0) > 0,
            menuWindowOpen(pid) || (focusedApp(timeout: 0.3)?.children.contains { $0.role == "Menu" } ?? false) {
@@ -788,7 +803,9 @@ struct Snap {
 var windowChangedAt = 0.0
 
 /// Run an action, let the app react, and report what changed.
-func acting(_ body: () throws -> String) throws -> String {
+/// `mayNavigate`: the action can load a page (a link, a button, Return) — look a
+/// little longer for a navigation to start, and if one does, wait for the page.
+func acting(mayNavigate: Bool = false, _ body: () throws -> String) throws -> String {
     if env("ANYBROWSER_SETTLE", 250) == 0 {                // fire and forget: no report
         let head = try body()
         return head.isEmpty ? "sent" : head
@@ -796,6 +813,7 @@ func acting(_ body: () throws -> String) throws -> String {
     let before = Snap.take()
     let web = before.pid > 0 && isWebApp(before.pid)
     let pageBefore = web ? pageState() : nil
+    let mark = web ? pageMark(pid: before.pid) : nil
     let watch = Watch()
     debug("acting: before-snapshot taken")
     let head = try body()
@@ -827,6 +845,28 @@ func acting(_ body: () throws -> String) throws -> String {
         pause(80)
         after = Snap.take()
     }
+    // A page that went away or started loading: wait for the new one and say what it is.
+    var loaded: String? = nil
+    if web, let m = mark, m.web != nil, after.pid == before.pid, after.dialog.isEmpty {
+        var started = navigationStarted(pid: before.pid, since: m)
+        if !started && mayNavigate {
+            // Stop looking as soon as the page shows a result of its own: nothing is loading.
+            let pageAnswered = { pageBefore.map { b in pageState().map { $0.text != b.text } ?? false } ?? false }
+            _ = until(0.45) { navigationStarted(pid: before.pid, since: m) || pageAnswered() }
+            started = navigationStarted(pid: before.pid, since: m)
+        }
+        if started, let app = NSRunningApplication(processIdentifier: before.pid) {
+            let t0 = now()
+            let r = waitLoad(app, from: m, seconds: 12)
+            loaded = loadedReport("loaded", r, t0).replacingOccurrences(of: "; waitload waits longer", with: " — waitload waits longer")
+            after = Snap.take()
+        }
+    }
+    // A window caught between two titles reads as untitled for a moment.
+    if loaded == nil, after.pid == before.pid, after.window.isEmpty, !before.window.isEmpty {
+        pause(150)
+        after = Snap.take()
+    }
     var pageAdded: [String] = []
     func diffPage() {
         // A new page or tab is all new text: the title already says what happened.
@@ -835,15 +875,15 @@ func acting(_ body: () throws -> String) throws -> String {
         guard let b = pageBefore, let now = pageState() else { pageAdded = []; return }
         pageAdded = pageChanges(b, now)
     }
-    diffPage()
+    if loaded == nil { diffPage() }
     // Silence can just be slowness: an app still launching, a settings pane
     // loading in another process. Listen a little longer before saying so.
-    if watch.events == 0 && after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web).hasPrefix("→ no reaction") {
+    if loaded == nil && watch.events == 0 && after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web).hasPrefix("→ no reaction") {
         watch.settle(first: 400, quiet: 90, max: 900)
         after = Snap.take()
         diffPage()
     }
-    let report = after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web)
+    let report = after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web, loaded: loaded)
     return head.isEmpty ? report : "\(head) \(report)"
 }
 

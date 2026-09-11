@@ -425,7 +425,7 @@ func webPick(_ needle: String, _ usable: (Node) -> Bool) -> Node? {
     if win.children.contains(where: { $0.role == "Sheet" }) { return nil }
     if let f = app.element(kAXFocusedUIElementAttribute), insideDialog(f) { return nil }
     guard let web = webArea(in: win) else { return nil }
-    let hits = webSearch(web, "AXAnyTypeSearchKey", text: needle, limit: 60)
+    let hits = webSearch(web, "AXAnyTypeSearchKey", text: needle, limit: 250)
     debug("webPick: \(hits.count) hits for \(needle)")
     let nodes = hits.compactMap { walk($0, maxDepth: 0, inWeb: true).nodes.first }.filter(usable)
     guard let best = rank(nodes, needle).first, let s = score(best.name, needle), s <= 1 else { return nil }
@@ -433,15 +433,43 @@ func webPick(_ needle: String, _ usable: (Node) -> Bool) -> Node? {
 }
 
 /// The page showing before an action, to tell when it has been left.
-struct PageMark { let web: AXUIElement?; let url: String? }
+struct PageMark { let web: AXUIElement?; let url: String?; var loaded: Bool? = nil; var window: AXUIElement? = nil }
 
-func pageMark(_ browser: NSRunningApplication) -> PageMark {
-    let app = AXUIElementCreateApplication(browser.processIdentifier)
+func pageMark(_ browser: NSRunningApplication) -> PageMark { pageMark(pid: browser.processIdentifier) }
+
+func pageMark(pid: pid_t) -> PageMark {
+    let app = AXUIElementCreateApplication(pid)
     AXUIElementSetMessagingTimeout(app, 1)
     guard let win = app.element(kAXFocusedWindowAttribute) ?? app.element(kAXMainWindowAttribute), let web = webArea(in: win) else {
         return PageMark(web: nil, url: nil)
     }
-    return PageMark(web: web, url: axURL(web))
+    return PageMark(web: web, url: axURL(web), loaded: web.attr("AXLoaded") as? Bool, window: win)
+}
+
+/// Chromium's page elements carry a node id of their own; WebKit's don't.
+func isChromiumWeb(_ web: AXUIElement) -> Bool { web.attr("ChromeAXNodeId") != nil }
+
+/// Safari says a page is loading on its web view's identifier
+/// ("BrowserView?IsPageLoaded=false…") from the moment a navigation starts — the
+/// page itself keeps saying "loaded" until the new one commits, a second or more later.
+func safariLoading(_ window: AXUIElement) -> Bool {
+    identified(window, "BrowserView", depth: 5)?.text(kAXIdentifierAttribute).contains("IsPageLoaded=false") ?? false
+}
+
+/// Has the page in front started to change since `mark`: Safari loading, the page
+/// torn down or replaced (Chromium), another address, or loading under way?
+func navigationStarted(pid: pid_t, since mark: PageMark) -> Bool {
+    let app = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(app, 0.5)
+    guard let win = app.element(kAXFocusedWindowAttribute) else { return false }
+    // Another window in front — a file dialog, an alert, a new window — isn't the page navigating.
+    if let w = mark.window, !CFEqual(w, win) { return false }
+    if safariLoading(win) { return true }
+    guard let web = webArea(in: win) else { return mark.web != nil }
+    if let m = mark.web, !CFEqual(m, web) { return true }
+    if let u = mark.url, axURL(web) != u { return true }
+    // A page that never finishes loading (a stream, a long poll) isn't a navigation.
+    return (web.attr("AXLoaded") as? Bool) == false && mark.loaded != false
 }
 
 /// Wait for the page in the browser's front window to finish loading. With a mark
@@ -459,6 +487,7 @@ func waitLoad(_ browser: NSRunningApplication, from mark: PageMark?, scripted: S
     while now() - start < seconds {
         if let win = app.element(kAXFocusedWindowAttribute) ?? app.element(kAXMainWindowAttribute) {
             if !woke { woke = true; wakeWebTree(app, pid: pid) }
+            let pending = safariLoading(win)
             if let web = webArea(in: win) {
                 url = axURL(web)
                 title = pageTitle(web, win)
@@ -467,9 +496,11 @@ func waitLoad(_ browser: NSRunningApplication, from mark: PageMark?, scripted: S
                 if !left, let m = mark {
                     if let before = m.url ?? scripted, !url.isEmpty, url != before { left = true }
                     else if let w = m.web, !CFEqual(w, web) { left = true }
+                    else if pending { left = true }
                     else if !loaded || now() - start > 1.5 { left = true }
                 }
-                if left && loaded && !busy && !url.isEmpty { return (true, url, title) }
+                // Safari's own flag first: until it clears, the page shown may still be the old one.
+                if left && !pending && loaded && !busy && !url.isEmpty { return (true, url, title) }
             }
         }
         pause(30)
@@ -556,6 +587,23 @@ func tabList(_ browser: NSRunningApplication) throws -> [TabInfo] {
     return out
 }
 
+/// Windows anybrowser opened (tab new --window, private), so a listing can say
+/// which are the agent's own and which are the user's.
+let openedPath = NSTemporaryDirectory() + "anybrowser-opened.json"
+
+func openedWindows() -> Set<String> {
+    guard let data = FileManager.default.contents(atPath: openedPath),
+          let list = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+    return Set(list)
+}
+
+func rememberFrontWindow(_ browser: NSRunningApplication) {
+    guard family(browser) != .other, let tabs = try? tabList(browser), let front = tabs.first?.window, !front.isEmpty else { return }
+    var list = Array(openedWindows())
+    list.append("\(browser.bundleIdentifier ?? "")#\(front)")
+    if let data = try? JSONEncoder().encode(Array(list.suffix(50))) { FileManager.default.createFile(atPath: openedPath, contents: data) }
+}
+
 func tabLine(_ t: TabInfo) -> String {
     let title = t.title.isEmpty ? "(untitled)" : String(flat(t.title).prefix(80))
     let url = t.url.isEmpty ? "" : " — " + String(t.url.prefix(110)) + (t.url.count > 110 ? "…" : "")
@@ -572,16 +620,20 @@ func tabsReport() throws -> String {
         do { tabs = try tabList(b) } catch let f as Fail { lines.append("\(browserName(b)) — \(f.message)"); continue }
         let windows = Set(tabs.map { $0.windowIndex }).count
         lines.append("\(browserName(b)) — \(windows) window\(windows == 1 ? "" : "s"), \(tabs.count) tab\(tabs.count == 1 ? "" : "s")")
+        let opened = openedWindows()
         var lastWindow = 0
+        let grouped = windows > 1 || tabs.contains { !$0.mode.isEmpty || opened.contains("\(b.bundleIdentifier ?? "")#\($0.window)") }
         for t in tabs {
             if t.windowIndex != lastWindow {
                 lastWindow = t.windowIndex
-                if windows > 1 || !t.mode.isEmpty { lines.append("  window \(t.windowIndex)" + (t.mode.isEmpty ? "" : " (\(t.mode))")) }
+                var notes: [String] = []
+                if !t.mode.isEmpty { notes.append(t.mode) }
+                if opened.contains("\(b.bundleIdentifier ?? "")#\(t.window)") { notes.append("opened by anybrowser") }
+                if grouped { lines.append("  window \(t.windowIndex)" + (notes.isEmpty ? "" : " (\(notes.joined(separator: ", ")))")) }
             }
-            lines.append((windows > 1 || !t.mode.isEmpty ? "    " : "  ") + tabLine(t))
+            lines.append((grouped ? "    " : "  ") + tabLine(t))
         }
     }
-    lines.append("(* = the tab showing in its window; tab <number> switches in the front window, tab <text> finds one anywhere)")
     return lines.joined(separator: "\n")
 }
 

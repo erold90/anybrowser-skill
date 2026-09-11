@@ -135,7 +135,7 @@ func execute(_ args: [String]) throws -> String {
         for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
             let ax = AXUIElementCreateApplication(app.processIdentifier)
             AXUIElementSetMessagingTimeout(ax, 0.5)
-            for w in realWindows(ax) {
+            for w in realWindows(ax) where w.text(kAXSubroleAttribute) != "AXUnknown" || w.text(kAXTitleAttribute).isEmpty == false && (ax.element(kAXFocusedWindowAttribute).map { CFEqual($0, w) } ?? false) {
                 let title = w.text(kAXTitleAttribute)
                 guard let f = frame(w) else { continue }
                 let minimized = (w.attr(kAXMinimizedAttribute) as? Bool) == true
@@ -433,7 +433,7 @@ func execute(_ args: [String]) throws -> String {
         }
         if coords.count == 2, Double(coords[0]) != nil {
             let p = try point(coords, 0)
-            return try acting { click(p, button: button, count: count); return "" }
+            return try acting(mayNavigate: button == .left) { click(p, button: button, count: count); return "" }
         }
         guard let needle = a.first else { throw Fail(message: "\(cmd) needs X Y or a name", code: 2) }
         let target = try pick(needle)
@@ -442,12 +442,15 @@ func execute(_ args: [String]) throws -> String {
             guard cmd == "click" else {
                 throw Fail(message: "\(label(target)) is covered or off screen — a \(cmd) there would hit something else")
             }
-            return try acting {
+            return try acting(mayNavigate: target.inWeb) {
                 target.el.perform(kAXPressAction, timeout: 0.3)
                 return "pressed \(label(target)) through accessibility — it's covered or off screen, a click there would hit something else"
             }
         }
-        return try acting {
+        // Clicking into a field or a toggle doesn't load pages; links and buttons can.
+        let navigates = target.inWeb && button == .left && !inputRoles.contains(target.role) && !toggleRoles.contains(target.role)
+            && target.role != "PopUpButton"
+        return try acting(mayNavigate: navigates) {
             click(target.point!, button: button, count: count)
             return "\(cmd)ed \(label(target)) at \(Int(target.point!.x)) \(Int(target.point!.y))"
         }
@@ -456,7 +459,7 @@ func execute(_ args: [String]) throws -> String {
         try requireTrust("press")
         guard let needle = a.first else { throw Fail(message: "press needs a name", code: 2) }
         let target = try pick(needle, needPoint: false)
-        return try acting {
+        return try acting(mayNavigate: target.inWeb) {
             let r = target.el.perform(kAXPressAction, timeout: 0.3)
             if r != .success && r != .cannotComplete { throw Fail(message: "\(label(target)) can't be pressed (\(r.rawValue)) — try click") }
             return "pressed \(label(target))"
@@ -491,7 +494,12 @@ func execute(_ args: [String]) throws -> String {
         let want = a[1]
         // Letters and digits only: a field may format what it gets ("333 1234").
         let norm = { (s: String) in s.lowercased().filter { $0.isLetter || $0.isNumber } }
-        let holds = { norm(field.el.text(kAXValueAttribute)) == norm(want) }
+        // Some pages swap the field for another on focus (Wikipedia's search): the
+        // focused field holding the text counts as well.
+        let holds = {
+            norm(field.el.text(kAXValueAttribute)) == norm(want)
+                || (focusedElement().map { inputRoles.contains($0.role) && norm($0.text(kAXValueAttribute)) == norm(want) } ?? false)
+        }
         return try acting {
             // Focus it like a person, select what's there, paste: the page gets
             // real input events, not a value set behind its back.
@@ -530,11 +538,12 @@ func execute(_ args: [String]) throws -> String {
         guard let name = a.first, let code = namedKeys[name.lowercased()] else {
             throw Fail(message: "unknown key: \(a.first ?? "") — keys: \(namedKeys.keys.sorted().joined(separator: " "))", code: 2)
         }
-        return try acting { tap(code); return "" }
+        return try acting(mayNavigate: code == 36 || code == 76) { tap(code); return "" }
 
     case "hotkey":
         try requireTrust("hotkey")
-        return try acting { try hotkey(a[safe: 0] ?? "", a[safe: 1] ?? ""); return "" }
+        let k = (a[safe: 1] ?? "").lowercased()
+        return try acting(mayNavigate: ["return", "enter", "[", "]", "r"].contains(k)) { try hotkey(a[safe: 0] ?? "", a[safe: 1] ?? ""); return "" }
 
     case "menu":
         try requireTrust("menu")
@@ -654,6 +663,7 @@ func execute(_ args: [String]) throws -> String {
                 _ = try Scripting.call(browser, "new", [url ?? "", inWindow ? "window" : ""])
                 bringToFront(browser)
             }
+            if inWindow { rememberFrontWindow(browser) }
             guard url != nil else { return "opened a new \(inWindow ? "window" : "tab") in \(browserName(browser))" }
             return loadedReport(inWindow ? "new window:" : "new tab:", waitLoad(browser, from: nil, seconds: 20), started)
         }
@@ -702,6 +712,7 @@ func execute(_ args: [String]) throws -> String {
                 else { try hotkey("cmd", "l"); paste(u); tap(36) }
             }
         }
+        rememberFrontWindow(browser)
         guard url != nil else { return "opened a private window in \(browserName(browser))" }
         return loadedReport("private window:", waitLoad(browser, from: nil, seconds: 20), started)
 
@@ -716,7 +727,16 @@ func execute(_ args: [String]) throws -> String {
         let browser = try targetBrowser()
         let secs = a.isEmpty ? 20 : try number(a[0], "seconds")
         let started = now()
-        let r = waitLoad(browser, from: nil, seconds: secs)
+        // A click or a key may have just started a navigation that hasn't shown yet:
+        // give it a moment to begin before taking the page in front as the answer.
+        let mark = pageMark(browser)
+        var r: (done: Bool, url: String, title: String)
+        if mark.web != nil, !until(1.2, { navigationStarted(pid: browser.processIdentifier, since: mark) }) {
+            r = waitLoad(browser, from: nil, seconds: secs)
+            guard r.done else { throw Fail(message: "still loading after \(Int(secs)) s: \(r.url)") }
+            return loadedReport("loaded", r, started) + " — no navigation was under way"
+        }
+        r = waitLoad(browser, from: mark.web == nil ? nil : mark, seconds: secs)
         guard r.done else { throw Fail(message: "still loading after \(Int(secs)) s: \(r.url)") }
         return loadedReport("loaded", r, started)
 
@@ -732,7 +752,7 @@ func execute(_ args: [String]) throws -> String {
         let max = a.firstIndex(of: "--max").map { i in Int((try? number(a[safe: i + 1], "--max")) ?? 12000) } ?? 12000
         guard var raw = pageText(web) else { throw Fail(message: "this page hands over no text — try read") }
         // Text without line breaks in it came from Chromium: take it line by line instead.
-        if raw.count > 40, raw.filter({ $0 == "\n" }).count * 150 < raw.count, let lines = pageLines(web, limit: max + 2000) {
+        if isChromiumWeb(web), let lines = pageLines(web, limit: max + 2000) {
             raw = lines
         }
         let text = tidyText(raw)

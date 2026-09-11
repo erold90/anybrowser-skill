@@ -19,12 +19,12 @@ binary, ~30 s). Before the first task: `scripts/anybrowser.sh check`.
 |---|---|---|
 | Open a site | `go example.com` — current tab, waits for the load | 0.2–1 s |
 | New tab / window | `tab new example.com` · `tab new example.com --window` · `private example.com` | |
-| What's open | `tabs` — every tab of every browser, with addresses | 0.3 s |
+| What's open | `tabs` — every tab of every browser, with addresses; `*` marks the tab showing in each window, `(opened by anybrowser)` the windows you opened | 0.3 s |
 | Switch / close | `tab 3` · `tab gmail` (title or address) · `tab close` · `tab close invoice` | 0.2 s |
 | Back, forward, reload | `back` · `forward` · `reload` — each waits for the page | 0.1–0.3 s |
-| Read a page | `text` — the whole page in one call, line by line | 20–100 ms |
-| Read what's visible, with field values | `read` | |
-| Links and where they go | `links` · `links invoice` | |
+| Read a page | `text` — the whole page in one call, line by line (`--max N` characters, default 12000) | 20–100 ms |
+| Read what's visible, with field values | `read` (`--all`: off-screen too, up to 400 lines — for long pages use `text`) | |
+| Links and where they go | `links` · `links invoice` — matches the link's text or address, any case; identical links listed once | |
 | Find an element | `find button Send` · `find field` · `find heading` · `where Send` | 5–150 ms |
 | A table | `find table` · `table 2` | |
 | Act | `click Send` · `fill Email "a@b.c"` · `select Plan Pro` · `click @3` | 0.2–0.6 s |
@@ -56,10 +56,10 @@ that already says what changed.
 | Report | Means |
 |---|---|
 | `page: "Payment failed"` | new text on the page after the action — a status line, an error, a result |
-| `loaded "Title" — https://…  (0.4 s)` | a navigation finished (`go`, `back`, `tab new`…) |
+| `loaded "Title" — https://…  (0.4 s)` | a page loaded — after `go`/`back`/`tab new`, and after a click or Return that started a navigation (it waits for the new page, up to 12 s) |
 | `focus: Email [TextField] · value: "…"` | where the keyboard is now, and what that field holds |
 | `dialog: "Delete this file?" — buttons: Cancel, Delete` | an alert or sheet is asking: `click <button>`, or `key return` for the default |
-| `new window: "…"` · `(sheet)` · `(file dialog)` | a window or dialog opened |
+| `new window: "…"` · `(sheet)` · `(file dialog) · pick the file with: upload <path>` | a window or dialog opened |
 | `now showing "…"` · `new tab: "…" (in the background)` · `tab closed` | the tabs changed |
 | `app: Safari → Finder` | another app came to the front |
 | `selected: "report.pdf"` · `changed: "Sent" [StaticText]` · `menu open` | native apps |
@@ -110,6 +110,9 @@ use it when the user is working on the same Mac.
 - **Chrome and the other Chromium browsers** build a page's accessibility tree
   only when asked: the first command on a page waits ~2 s for it, later ones don't.
 - **`text` right after a click** can be a beat behind the page: `expect "…"` waits for it.
+- **`waitload`** after an action that may navigate waits ~1 s for the navigation to
+  begin; it says `no navigation was under way` when none did. Clicks and Return
+  already wait for the pages they load, so you rarely need it.
 - **JavaScript** (`js`) needs the browser's "Allow JavaScript from Apple Events"
   (Chrome: View › Developer; Safari: Develop menu, shown via Settings › Advanced).
   It lets any app allowed to control the browser run code in signed-in pages:
