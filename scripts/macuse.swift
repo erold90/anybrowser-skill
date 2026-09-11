@@ -290,12 +290,27 @@ func frontTree(stop: ((Node) -> Bool)? = nil, visibleOnly: Bool = false) throws 
     return result.nodes
 }
 
+/// Exact name, then the needle as a whole first word ("Invia" → "Invia (⌘Enter)"),
+/// then any prefix ("Inviati"), then anywhere. Invisible direction marks, which web
+/// apps put around shortcuts, don't count.
 func rank(_ nodes: [Node], _ needle: String) -> [Node] {
-    let n = needle.lowercased().trimmingCharacters(in: .whitespaces)
+    let invisible = CharacterSet(charactersIn: "\u{200E}\u{200F}\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}\u{2066}\u{2067}\u{2068}\u{2069}")
+    func clean(_ s: String) -> String {
+        String(String.UnicodeScalarView(s.unicodeScalars.filter { !invisible.contains($0) })).lowercased()
+            .trimmingCharacters(in: .whitespaces)
+    }
+    let n = clean(needle)
     return nodes.enumerated().compactMap { (i, node) -> (Int, Int, Node)? in
-        let name = node.name.lowercased()
-        let r = name == n ? 0 : name.hasPrefix(n) ? 1 : name.contains(n) ? 2 : -1
-        return r < 0 ? nil : (r, i, node)
+        let name = clean(node.name)
+        let r: Int
+        if name == n { r = 0 }
+        else if name.hasPrefix(n) {
+            let next = name[name.index(name.startIndex, offsetBy: n.count)...].first
+            r = (next.map { !$0.isLetter && !$0.isNumber } ?? true) ? 1 : 2
+        }
+        else if name.contains(n) { r = 3 }
+        else { return nil }
+        return (r, i, node)
     }.sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }.map { $0.2 }
 }
 
@@ -324,8 +339,12 @@ func pick(_ needle: String, fields: Bool = false, roles: Set<String>? = nil, nee
     var found: Node? = nil
     let exact = needle.lowercased().trimmingCharacters(in: .whitespaces)
     let allowed = fields ? inputRoles : roles
+    // Containers share their names with what they hold (a browser window is titled
+    // like its tab): clicking one lands in its middle, on whatever is there.
+    let containers: Set<String> = ["Window", "WebArea", "Application", "ScrollArea", "SplitGroup", "Sheet", "TabGroup"]
     let usable = { (n: Node) -> Bool in
         !n.disabled && (!needPoint || n.point != nil) && (allowed == nil || allowed!.contains(n.role))
+            && !containers.contains(n.role)
     }
     // The first exact, usable match in tree order is what ranking would pick
     // anyway: stop reading the window there.
@@ -437,6 +456,26 @@ func selectionNames(_ view: AXUIElement) -> [String] {
     return picked.prefix(3).map { String(flat(label($0, 0)).prefix(50)) }.filter { !$0.isEmpty }
 }
 
+/// A browser window's tabs: Safari's "TabBar" group, Chrome's tab group — each tab a
+/// radio button. Empty when a window shows no tab bar.
+func tabBar(_ window: AXUIElement) -> [(title: String, selected: Bool)] {
+    func search(_ e: AXUIElement, _ depth: Int) -> [(title: String, selected: Bool)]? {
+        guard depth <= 4 else { return nil }
+        for child in e.children {
+            AXUIElementSetMessagingTimeout(child, 0.3)
+            let isBar = child.text(kAXIdentifierAttribute).hasPrefix("TabBar") || child.role == "TabGroup"
+            if isBar {
+                let tabs = child.children.filter { $0.role == "RadioButton" }
+                    .map { (title: $0.text(kAXTitleAttribute), selected: ($0.attr(kAXValueAttribute) as? NSNumber)?.intValue == 1) }
+                if !tabs.isEmpty { return tabs }
+            }
+            if ["Group", "SplitGroup", "Toolbar"].contains(child.role), let found = search(child, depth + 1) { return found }
+        }
+        return nil
+    }
+    return search(window, 0) ?? []
+}
+
 /// The words and buttons of a small dialog — an alert inside a page, a sheet, an
 /// alert window. Nil for anything bigger than a dialog.
 func dialogSummary(_ container: AXUIElement) -> String? {
@@ -512,6 +551,7 @@ struct Snap {
     var value = ""
     var dialog = ""
     var selection = ""
+    var tabs: [(title: String, selected: Bool)] = []
 
     static func take() -> Snap {
         var s = Snap()
@@ -527,6 +567,7 @@ struct Snap {
             s.windowRef = w
             s.window = w.text(kAXTitleAttribute)
             if w.role == "ScrollArea" && w.text(kAXTitleAttribute).isEmpty { s.window = "the desktop" }
+            s.tabs = tabBar(w)
             let role = w.role, sub = stripAX(w.text(kAXSubroleAttribute)), id = w.text(kAXIdentifierAttribute)
             s.windowKind = [role == "Window" || role == "ScrollArea" ? "" : role.lowercased(),
                             ["StandardWindow", "Unknown", ""].contains(sub) ? "" : sub.lowercased(),
@@ -568,14 +609,18 @@ struct Snap {
                 let names = selectionNames(f)
                 if !names.isEmpty { s.selection = names.map { "\"\($0)\"" }.joined(separator: ", ") }
             }
-            // An alert drawn inside a page takes the focus into an unnamed group.
-            if ["Group", "Sheet", "Dialog"].contains(role) || s.focus.hasPrefix("[Group]") {
-                var e: AXUIElement? = f
-                for _ in 0..<3 {
-                    guard let cur = e else { break }
-                    if let d = dialogSummary(cur) { s.dialog = d; break }
-                    e = cur.element(kAXParentAttribute)
+            // An alert drawn by the browser takes the focus into a group whose subrole
+            // says dialog (Safari: AXDialog). A plain group — a Gmail message card with
+            // Reply and React buttons — is not one, however dialog-like it looks.
+            var e: AXUIElement? = f
+            for _ in 0..<3 {
+                guard let cur = e else { break }
+                let sub = cur.text(kAXSubroleAttribute)
+                if cur.role == "Sheet" || cur.role == "Dialog" || sub.contains("Dialog") || sub.contains("Alert") {
+                    if let d = dialogSummary(cur) { s.dialog = d }
+                    break
                 }
+                e = cur.element(kAXParentAttribute)
             }
         }
         // A sheet or an alert window: say what it asks.
@@ -601,6 +646,17 @@ struct Snap {
             parts.append("now showing \(title)")              // a tab switched, closed or navigated
         } else if window != b.window || windowKind != b.windowKind {
             parts.append("window: \(title)\(kind)")
+        }
+        // Only against a tab bar that was visible before: a sheet hides it, and its
+        // return isn't a tab opening.
+        if pid == b.pid && tabs.count > b.tabs.count && !b.tabs.isEmpty {
+            // A link that opens a tab, maybe behind the current one.
+            let before = Set(b.tabs.map { $0.title })
+            for t in tabs where !before.contains(t.title) && parts.count < 6 {
+                parts.append("new tab: \"\(t.title)\"" + (t.selected ? "" : " (in the background)"))
+            }
+        } else if pid == b.pid && tabs.count < b.tabs.count && !b.tabs.isEmpty {
+            parts.append("tab closed")
         }
         if dialog != b.dialog && !dialog.isEmpty { parts.append(dialog) }
         if focus != b.focus && !focus.isEmpty && dialog.isEmpty { parts.append("focus: \(focus)") }
@@ -715,6 +771,9 @@ var postedEvents = false
 
 func post(_ type: CGEventType, _ p: CGPoint, _ button: CGMouseButton = .left, clicks: Int64 = 0) {
     guard let e = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: p, mouseButton: button) else { return }
+    // A new event copies whatever modifiers the system thinks are held; a click must
+    // never turn into a Cmd-click because of an earlier shortcut.
+    e.flags = []
     if clicks > 0 { e.setIntegerValueField(.mouseEventClickState, value: clicks) }
     e.post(tap: .cghidEventTap)
     postedEvents = true
@@ -786,6 +845,7 @@ let namedKeys: [String: CGKeyCode] = [
     "page-up": 116, "page-down": 121, "home": 115, "end": 119,
     "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100,
     "f9": 101, "f10": 109, "f11": 103, "f12": 111,
+    "f13": 105, "f14": 107, "f15": 113, "f16": 106, "f17": 64, "f18": 79, "f19": 80,
 ]
 
 /// Character → key on the *current* layout, so cmd+z is cmd+z on AZERTY too.
@@ -814,14 +874,27 @@ enum Layout { static let keys: [Character: (CGKeyCode, Bool)] = {
     return map
 }() }
 
+/// Modifier keys, pressed and released around a shortcut like a hand would.
+let modifierKeys: [(flag: CGEventFlags, key: CGKeyCode)] = [
+    (.maskControl, 59), (.maskAlternate, 58), (.maskShift, 56), (.maskCommand, 55), (.maskSecondaryFn, 63),
+]
+
+/// A key press. Modifiers go down first and come up last, as real key events:
+/// setting a flag on the key alone left the system believing Cmd was still held,
+/// and every later click arrived as a Cmd-click (Safari selected two tabs).
 func tap(_ code: CGKeyCode, flags: CGEventFlags = []) {
     waitOutNewWindow()
-    for down in [true, false] {
-        guard let e = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down) else { continue }
-        e.flags = flags
+    var held: CGEventFlags = []
+    func send(_ key: CGKeyCode, _ down: Bool) {
+        guard let e = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down) else { return }
+        e.flags = held
         e.post(tap: .cghidEventTap)
-        pause(4)
+        pause(3)
     }
+    for m in modifierKeys where flags.contains(m.flag) { held.insert(m.flag); send(m.key, true) }
+    send(code, true)
+    send(code, false)
+    for m in modifierKeys.reversed() where flags.contains(m.flag) { held.remove(m.flag); send(m.key, false) }
     postedEvents = true
 }
 
@@ -868,6 +941,7 @@ func typeKeys(_ text: String) {
         let units = Array(String(ch).utf16)
         for down in [true, false] {
             guard let e = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { continue }
+            e.flags = []
             units.withUnsafeBufferPointer { e.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress) }
             e.post(tap: .cghidEventTap)
             postedEvents = true
@@ -1769,6 +1843,9 @@ func execute(_ args: [String]) throws -> String {
 
     case "check":
         var lines: [String] = []
+        let held = CGEventSource.flagsState(.combinedSessionState)
+        let stuck = [(CGEventFlags.maskCommand, "Cmd"), (.maskShift, "Shift"), (.maskAlternate, "Option"), (.maskControl, "Ctrl")]
+            .filter { held.contains($0.0) }.map { $0.1 }
         if screenLocked() { lines.append("screen            LOCKED — unlock it, then run check again") }
         let screen = CGPreflightScreenCaptureAccess()
         lines.append("screen recording  " + (screen ? "ok" : "MISSING — System Settings > Privacy & Security > Screen Recording"))
@@ -1778,6 +1855,8 @@ func execute(_ args: [String]) throws -> String {
         pause(60)
         let moved = pointer().x != before.x
         post(.mouseMoved, before)
+        lines.append("modifier keys     " + (stuck.isEmpty ? "none held"
+            : "\(stuck.joined(separator: "+")) held — if nobody is pressing it, press and release it once, or every click becomes a \(stuck[0])-click"))
         lines.append("accessibility     " + (AXIsProcessTrusted() && moved ? "ok"
             : "MISSING — clicks, keys and reading the screen will fail;\n                  System Settings > Privacy & Security > Accessibility, add your terminal app, restart it"))
         return lines.joined(separator: "\n")

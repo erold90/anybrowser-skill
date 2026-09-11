@@ -11,6 +11,13 @@ Run everything through `scripts/mac.sh` (the first call builds a native binary,
 ~20 s). Coordinates are logical points: a pixel read off `shot` is the point
 `click` takes.
 
+## Apps with a playbook
+
+Before driving one of these, read its file — names, recipes and the traps already
+met, so you don't rediscover them:
+
+- `apps/gmail.md` — compose, search, read, reply, links (web Gmail)
+
 ## Before the first run
 
 ```
@@ -82,8 +89,9 @@ so no `sleep` between steps.
 | Arrange windows | `window move 0 25` · `window resize 800 600` · `window maximize` · `window minimize` · `window restore "Invoice"` · `window fullscreen` · `window close "Invoice"` — front window, or the one whose title matches |
 | Apps | `focus Calculator` (launches it) · `quit Calculator` (asks like Cmd+Q; unsaved work shows up as a `dialog:`) |
 
-Names match exact first, then by prefix, then anywhere, among enabled elements —
-`click Send` picks "Send" over "Send draft", `click Sen` picks "Send". When two
+Names match exact first, then as a whole first word, then by prefix, then
+anywhere, among enabled elements — `click Send` picks "Send" over "Send draft",
+and Gmail's "Invia (⌘Enter)" over "Inviati" for `click Invia`. When two
 elements tie, the first in the window wins: `where` shows the candidates.
 
 `click <name>` moves the real pointer. `press <name>` triggers the control

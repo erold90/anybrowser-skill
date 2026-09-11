@@ -64,6 +64,9 @@ t "window needs an action"              says "window needs an action" "$M" windo
 t "window move needs two numbers"       says "needs two numbers" "$M" window move 10
 t "window rejects unknown actions"      says "unknown window action" "$M" window wiggle
 t "quit says when an app isn't running" says "isn't running" "$M" quit "zz-no-such-app"
+# A shortcut used to leave Cmd "held" for the whole system: every later click became a Cmd-click.
+MACUSE_SETTLE=0 "$M" hotkey "cmd shift" f19 >/dev/null 2>&1
+t "a shortcut leaves no modifier held"  says "modifier keys     none held" "$M" check
 t "menus lists a menu's items"          bash -c "\"$M\" menus Finder \"\$(\"$M\" menus Finder | sed -n 3p)\" | grep -q ."
 
 echo "pass=$pass fail=$fail"

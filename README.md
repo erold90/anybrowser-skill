@@ -121,6 +121,15 @@ fixes the travel time. `MACUSE_SETTLE=0` skips the wait and report (fire and
 forget), `MACUSE_WAIT` sets how long a lookup by name waits (seconds, default 2),
 `MACUSE_DEBUG=1` prints where a slow step spends its time.
 
+## App playbooks
+
+`apps/<app>.md` holds what an agent needs to drive a specific app without
+rediscovering it: the names of its controls, working recipes, and the traps
+already met. The skill tells the agent to read the playbook first. So far:
+`apps/gmail.md` (compose, search, read, reply, open links — verified on the real
+mail.google.com). Contributions welcome: drive the app, write down only what you
+verified.
+
 ## On the web
 
 A browser extension works inside the page — it reads the DOM, runs JavaScript
