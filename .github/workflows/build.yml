@@ -1,0 +1,30 @@
+name: build
+
+# The engine is one Swift file. Compile it on Apple Silicon runners and run the
+# commands that need no Accessibility permission (CI runners have none).
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        # Apple Silicon runners; Intel is covered by local runs (tests/check.sh, tests/web.sh).
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile
+        run: |
+          swiftc --version
+          swiftc -O scripts/macuse.swift -o scripts/macuse
+          file scripts/macuse
+      - name: Commands that need no permission
+        run: |
+          scripts/macuse version
+          scripts/macuse help | head -5
+          scripts/macuse apps
+          ! scripts/macuse open file:///etc/hosts
+          ! scripts/macuse shot ../x
+          printf 'pos\n' | scripts/macuse do - || true

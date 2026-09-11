@@ -145,6 +145,24 @@ ignore scripted values, browsers other than Chrome.
   `press` doesn't.
 - **`shot` captures one display at a time** (`--display N`).
 
+## When something doesn't work
+
+- **Clicks and keys do nothing, silently.** Accessibility isn't granted to the
+  app that runs the agent. `scripts/mac.sh check` tells you; grant it to your
+  terminal (Terminal, iTerm, Ghostty…) in System Settings → Privacy & Security →
+  Accessibility, then quit and reopen the terminal.
+- **`shot` is black or fails.** Same place, Screen Recording.
+- **"the screen is locked".** Unlock the Mac; nothing can be driven behind the lock screen.
+- **An element isn't found.** Read the names first — `ui`, `where <part of it>`,
+  `menus <app> <menu>` — they follow the system language. On a web page in
+  Chrome or an Electron app, the first read can take ~3 s.
+- **"no reaction seen".** The app may draw its own UI (no accessibility tree) or
+  be slow to answer: `read` or `shot --window` to see what happened.
+- **Anything else:** `MACUSE_DEBUG=1 scripts/mac.sh <command>` prints where the
+  time goes; open an issue with that and `scripts/macuse version`.
+
+Uninstall: `rm -rf ~/.claude/skills/macuse`.
+
 ## Requirements
 
 macOS with the Swift compiler (Command Line Tools). Tested on macOS Sequoia 15.7,

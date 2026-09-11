@@ -14,6 +14,8 @@ import ApplicationServices
 import Carbon
 import ImageIO
 
+let version = "0.3.0"
+
 // MARK: - Errors and output
 
 struct Fail: Error { let message: String; var code: Int32 = 1 }
@@ -146,6 +148,7 @@ struct Node {
     let inWeb: Bool
     var reachable = true          // a click at `point` lands on this element
     var on: Bool? = nil           // checkboxes, radio buttons, switches: ticked or not
+    var value: String? = nil      // what a field holds or a pop-up shows, when it has a label of its own
 }
 
 let toggleRoles: Set<String> = ["CheckBox", "RadioButton", "Switch", "ToggleButton"]
@@ -226,6 +229,10 @@ func walk(_ root: AXUIElement, maxDepth: Int = 40, maxNodes: Int = 8000,
             let enabled = value(values, 7) as? Bool
             var node = Node(el: el, name: name, role: role, point: point, disabled: enabled == false, inWeb: inWeb)
             if toggleRoles.contains(role), let state = value(values, 3) as? NSNumber { node.on = state.intValue != 0 }
+            if inputRoles.contains(role) || role == "PopUpButton", role != "SecureTextField" {
+                let held = str(value(values, 3))
+                if held != name { node.value = String(flat(held).prefix(120)) }
+            }
             nodes.append(node)
             if let stop = stop, stop(node) { done = true; return }
         }
@@ -403,14 +410,80 @@ final class Watch {
     }
 }
 
+/// Windows that are windows. Safari's link-preview bar (507×20) comes and goes in
+/// the AXWindows list and used to read as a window opening or closing.
+func realWindows(_ app: AXUIElement) -> [AXUIElement] {
+    ((app.attr(kAXWindowsAttribute) as? [AXUIElement]) ?? []).filter { w in
+        guard let size = axSize(w.attr(kAXSizeAttribute)) else { return true }
+        return size.width >= 150 && size.height >= 60
+    }
+}
+
+/// The words and buttons of a small dialog — an alert inside a page, a sheet, an
+/// alert window. Nil for anything bigger than a dialog.
+func dialogSummary(_ container: AXUIElement) -> String? {
+    var texts: [String] = [], buttons: [String] = []
+    var visited = 0
+    var tooBig = false
+    func visit(_ e: AXUIElement, _ depth: Int) {
+        if tooBig || depth > 14 { return }                             // Chrome nests an alert's text 12 deep
+        visited += 1
+        if visited > 60 { tooBig = true; return }
+        AXUIElementSetMessagingTimeout(e, 0.3)
+        let role = e.role
+        if depth > 0 && role == "WebArea" { tooBig = true; return }      // a whole page is not a dialog
+        if role == "Button" {
+            let t = e.text(kAXTitleAttribute).isEmpty ? e.text(kAXDescriptionAttribute) : e.text(kAXTitleAttribute)
+            if !t.isEmpty { buttons.append(t) }
+        } else if ["StaticText", "TextArea", "Heading"].contains(role) {
+            // Safari puts an alert's words in the value, Chrome in the title.
+            var t = flat(e.text(kAXValueAttribute))
+            if t.isEmpty { t = flat(e.text(kAXTitleAttribute)) }
+            if t.isEmpty { t = flat(e.text(kAXDescriptionAttribute)) }
+            if !t.isEmpty && !texts.contains(t) { texts.append(t) }
+        }
+        for k in e.children { visit(k, depth + 1) }
+    }
+    visit(container, 0)
+    debug("dialogSummary: visited \(visited) tooBig \(tooBig) buttons \(buttons) texts \(texts.prefix(3))")
+    guard !tooBig, (1...4).contains(buttons.count), !texts.isEmpty else { return nil }
+    let words = String(texts.joined(separator: " — ").prefix(120))
+    return "dialog: \"\(words)\" — buttons: \(buttons.joined(separator: ", "))"
+}
+
+let webBundles = ["com.apple.Safari", "com.apple.SafariTechnologyPreview"] + chromium
+
+/// Browsers and Electron/CEF apps: pages whose text changes without telling anyone.
+func isWebApp(_ pid: pid_t) -> Bool {
+    guard let app = NSRunningApplication(processIdentifier: pid) else { return false }
+    let bundle = app.bundleIdentifier ?? ""
+    if webBundles.contains(where: { bundle.hasPrefix($0) }) { return true }
+    let frameworks = app.bundleURL?.appendingPathComponent("Contents/Frameworks").path ?? ""
+    return FileManager.default.fileExists(atPath: frameworks + "/Electron Framework.framework")
+        || FileManager.default.fileExists(atPath: frameworks + "/Chromium Embedded Framework.framework")
+}
+
+/// The text a person can see on the page right now, line by line. Never wakes a
+/// page tree (that can take seconds): a report must stay quick.
+func visiblePageText() -> [String] {
+    guard let app = focusedApp(timeout: 0.5), let win = app.element(kAXFocusedWindowAttribute),
+          let o = axPoint(win.attr(kAXPositionAttribute)), let size = axSize(win.attr(kAXSizeAttribute)) else { return [] }
+    let clip = CGRect(origin: o, size: size).intersection(CGDisplayBounds(CGMainDisplayID()))
+    return walk(win, maxNodes: 3000, clip: clip).nodes
+        .filter { $0.inWeb && ["StaticText", "Heading", "Cell", "Link"].contains($0.role) }
+        .map { String(flat($0.name).prefix(100)) }
+}
+
 struct Snap {
     var pid: pid_t = 0
     var app = ""
     var window = ""
+    var windowRef: AXUIElement? = nil
     var windowKind = ""
     var windows = 0
     var focus = ""
     var value = ""
+    var dialog = ""
 
     static func take() -> Snap {
         var s = Snap()
@@ -419,27 +492,29 @@ struct Snap {
         guard let app = focusedApp(timeout: 0.4) else { return s }
         s.pid = app.pid
         s.app = appName(app.pid)
-        s.windows = (app.attr(kAXWindowsAttribute) as? [AXUIElement])?.count ?? 0
+        s.windows = realWindows(app).count
+        var focusedWindow: AXUIElement? = nil
         if let w = app.element(kAXFocusedWindowAttribute) {
+            focusedWindow = w
+            s.windowRef = w
             s.window = w.text(kAXTitleAttribute)
             let role = w.role, sub = stripAX(w.text(kAXSubroleAttribute)), id = w.text(kAXIdentifierAttribute)
             s.windowKind = [role == "Window" ? "" : role.lowercased(),
                             ["StandardWindow", "Unknown", ""].contains(sub) ? "" : sub.lowercased(),
                             id == "open-panel" ? "file dialog" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
         }
-        if let f = app.element(kAXFocusedUIElementAttribute) {
-            func named(_ e: AXUIElement) -> String {
-                for a in [kAXTitleAttribute, kAXDescriptionAttribute, kAXPlaceholderValueAttribute] {
-                    let t = e.text(a); if !t.isEmpty { return String(flat(t).prefix(60)) }
-                }
-                return ""
+        func named(_ e: AXUIElement) -> String {
+            for a in [kAXTitleAttribute, kAXDescriptionAttribute, kAXPlaceholderValueAttribute] {
+                let t = e.text(a); if !t.isEmpty { return String(flat(t).prefix(60)) }
             }
+            return ""
+        }
+        if let f = app.element(kAXFocusedUIElementAttribute) {
             let role = f.role
             let name = named(f)
             if !name.isEmpty {
                 s.focus = "\(name)  [\(role)]"
             } else {
-                // An unnamed group is often a dialog: say what it belongs to, or what it says.
                 var context = ""
                 var e: AXUIElement? = f
                 for _ in 0..<4 where context.isEmpty {
@@ -452,14 +527,30 @@ struct Snap {
                 s.focus = context.isEmpty ? "[\(role)]" : "[\(role)] in \"\(context)\""
             }
             if inputRoles.contains(role), role != "SecureTextField" { s.value = String(flat(f.text(kAXValueAttribute)).prefix(80)) }
+            // An alert drawn inside a page takes the focus into an unnamed group.
+            if ["Group", "Sheet", "Dialog"].contains(role) || s.focus.hasPrefix("[Group]") {
+                var e: AXUIElement? = f
+                for _ in 0..<3 {
+                    guard let cur = e else { break }
+                    if let d = dialogSummary(cur) { s.dialog = d; break }
+                    e = cur.element(kAXParentAttribute)
+                }
+            }
+        }
+        // A sheet or an alert window: say what it asks.
+        if s.dialog.isEmpty, let w = focusedWindow,
+           s.windowKind.contains("sheet") || s.windowKind.contains("dialog") || (axSize(w.attr(kAXSizeAttribute)).map { $0.width < 700 && $0.height < 500 } ?? false),
+           !s.windowKind.contains("file dialog") {
+            s.dialog = dialogSummary(w) ?? ""
         }
         return s
     }
 
-    func changes(since b: Snap, watch: Watch) -> String {
+    func changes(since b: Snap, watch: Watch, pageAdded: [String] = [], web: Bool = false) -> String {
         var parts: [String] = []
         let title = window.isEmpty ? "(untitled)" : "\"\(window)\""
         let kind = windowKind.isEmpty ? "" : " (\(windowKind))"
+        let sameWindow = windowRef != nil && b.windowRef != nil && CFEqual(windowRef!, b.windowRef!)
         if pid != b.pid {
             parts.append("app: \(b.app) → \(app)")
             parts.append(windows == 0 ? "no window open" : "window: \(title)\(kind)")
@@ -467,24 +558,35 @@ struct Snap {
             parts.append("new window: \(title)\(kind)")
         } else if windows < b.windows {
             parts.append(windows == 0 ? "window closed — no window open" : "window closed — now in \(title)\(kind)")
+        } else if sameWindow && window != b.window {
+            parts.append("now showing \(title)")              // a tab switched, closed or navigated
         } else if window != b.window || windowKind != b.windowKind {
             parts.append("window: \(title)\(kind)")
         }
-        if focus != b.focus && !focus.isEmpty { parts.append("focus: \(focus)") }
+        if dialog != b.dialog && !dialog.isEmpty { parts.append(dialog) }
+        if focus != b.focus && !focus.isEmpty && dialog.isEmpty { parts.append("focus: \(focus)") }
         if value != b.value && !value.isEmpty { parts.append("value: \"\(value)\"") }
-        if (watch.kinds[kAXMenuOpenedNotification] ?? 0) > 0 { parts.append("menu opened") }
-        // Text that changed somewhere else on screen — a status line, a counter.
-        var seen = Set<String>([value])
-        // Only text a person reads as a result; not toolbars updating their font menus,
-        // and only in the app still in front — the one we left keeps retitling its tabs.
-        for el in watch.changed where pid == b.pid {
-            AXUIElementSetMessagingTimeout(el, 0.3)        // a busy app must not stall the report
-            guard ["StaticText", "Heading", "Cell", "Link", "Button"].contains(el.role) else { continue }
-            var t = el.text(kAXValueAttribute)
-            if t.isEmpty { t = el.text(kAXTitleAttribute) }
-            t = String(flat(t).prefix(80))
-            if !t.isEmpty && t != window && t != b.window && seen.insert(t).inserted && parts.count < 6 {
-                parts.append("changed: \"\(t)\" [\(el.role)]")
+        // Only a menu still showing counts: select opens and closes one on its way.
+        if (watch.kinds[kAXMenuOpenedNotification] ?? 0) > 0,
+           menuWindowOpen(pid) || (focusedApp(timeout: 0.3)?.children.contains { $0.role == "Menu" } ?? false) {
+            parts.append("menu open")
+        }
+        var seen = Set<String>([value, window, b.window])
+        if !pageAdded.isEmpty {
+            // New text on the page: a status line, an error, a result.
+            for t in pageAdded where seen.insert(t).inserted && parts.count < 6 { parts.append("page: \"\(t)\"") }
+        } else if pid == b.pid && !web {
+            // Native apps announce text changes; keep the ones in the window in front.
+            // (In a browser the page diff above is the channel: its notifications
+            // come from the address bar and the file dialog.)
+            for el in watch.changed {
+                AXUIElementSetMessagingTimeout(el, 0.3)
+                guard ["StaticText", "Heading", "Cell", "Link", "Button"].contains(el.role) else { continue }
+                if let w = el.element(kAXWindowAttribute), let front = windowRef, !CFEqual(w, front) { continue }
+                var t = el.text(kAXValueAttribute)
+                if t.isEmpty { t = el.text(kAXTitleAttribute) }
+                t = String(flat(t).prefix(80))
+                if !t.isEmpty && seen.insert(t).inserted && parts.count < 6 { parts.append("changed: \"\(t)\" [\(el.role)]") }
             }
         }
         if parts.isEmpty {
@@ -507,6 +609,8 @@ func acting(_ body: () throws -> String) throws -> String {
         return head.isEmpty ? "sent" : head
     }
     let before = Snap.take()
+    let web = before.pid > 0 && isWebApp(before.pid)
+    let pageBefore = web ? Set(visiblePageText()) : []
     let watch = Watch()
     debug("acting: before-snapshot taken")
     let head = try body()
@@ -514,33 +618,48 @@ func acting(_ body: () throws -> String) throws -> String {
     watch.settle()
     debug("acting: settled (\(watch.events) events)")
     var after = Snap.take()
-    // Something new is on screen: let it finish appearing, or the next click can
-    // land while a dialog is still animating in and be silently ignored. Waiting
-    // is safe; clicking again would not be.
-    // Browsers hold back input on a dialog that just *appeared*. Returning to a
-    // window that was already there, or a page retitling itself after a
-    // navigation, needs no wait.
+    // Browsers hold back input on a dialog that just *appeared*: the next click
+    // waits that out. Returning to a window that was already there, or a page
+    // retitling itself after a navigation, needs no wait.
     let appeared = after.windows > before.windows
         || (after.window != before.window && !after.windowKind.isEmpty)
         || (after.pid != before.pid && !after.windowKind.isEmpty)
+        || (!after.dialog.isEmpty && after.dialog != before.dialog)
     if appeared { windowChangedAt = now() }
-    if appeared || after.pid != before.pid || after.windows != before.windows
-        || (after.focus != before.focus && after.focus.hasPrefix("[Group]")) {
+    // Something new is on screen: let it finish appearing before looking again.
+    if appeared || after.pid != before.pid || after.windows != before.windows {
         pause(200)
         after = Snap.take()
+    }
+    // A window that just appeared may be an alert: say what it asks (a big
+    // window or a page is never summarised, so this costs nothing there).
+    let otherWindow = after.windowRef != nil && (before.windowRef == nil || !CFEqual(after.windowRef!, before.windowRef!))
+    if otherWindow || after.windows > before.windows, after.dialog.isEmpty, let w = after.windowRef, !after.windowKind.contains("file dialog") {
+        after.dialog = dialogSummary(w) ?? ""
     }
     // A text field's value can reach the accessibility tree a beat after the edit.
     if after.value.isEmpty, after.focus.hasSuffix("[TextField]") || after.focus.hasSuffix("[TextArea]") {
         pause(80)
         after = Snap.take()
     }
+    var pageAdded: [String] = []
+    func diffPage() {
+        // A new page or tab is all new text: the title already says what happened.
+        // So is the page coming back from behind a dialog that hid it.
+        guard web, after.pid == before.pid, after.dialog.isEmpty, before.dialog.isEmpty, after.window == before.window else { pageAdded = []; return }
+        let now = visiblePageText()
+        var seen = Set<String>()
+        pageAdded = now.filter { !pageBefore.contains($0) && !$0.isEmpty && seen.insert($0).inserted }.prefix(4).map { $0 }
+    }
+    diffPage()
     // Silence can just be slowness: an app still launching, a settings pane
     // loading in another process. Listen a little longer before saying so.
-    if watch.events == 0 && after.changes(since: before, watch: watch).hasPrefix("→ no reaction") {
+    if watch.events == 0 && after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web).hasPrefix("→ no reaction") {
         watch.settle(first: 400, quiet: 90, max: 900)
         after = Snap.take()
+        diffPage()
     }
-    let report = after.changes(since: before, watch: watch)
+    let report = after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web)
     return head.isEmpty ? report : "\(head) \(report)"
 }
 
@@ -1057,8 +1176,8 @@ LOOK
   where <text>             elements matching <text>, best first, with centre points
   waitfor <text> [secs]    return as soon as <text> appears (default 10 s)
   waitgone <text> [secs]   return as soon as <text> is gone
-  read [--all]             the visible text in order — on a web page, the page
-  ui [--all]               named elements you can see (--all: offscreen too)
+  read [--all]             the visible text in order, with field values — on a web page, the page
+  ui [--all] [--page]      named elements you can see (--all: offscreen too, --page: web page only)
   apps · windows · menus <app> · pos
 
 ACT  (each one waits for the app to react and reports what changed)
@@ -1078,6 +1197,7 @@ ACT  (each one waits for the app to react and reports what changed)
   do -                     the same, one step per line from stdin
 
   check                    report which permissions are missing
+  version                  version, macOS and architecture — paste it into bug reports
 
 Environment: MACUSE_SETTLE=ms (reaction wait, 0 = fire and forget),
              MACUSE_GLIDE=ms (pointer travel; default scales with distance, 0 = jump),
@@ -1097,6 +1217,15 @@ func execute(_ args: [String]) throws -> String {
     switch cmd {
     case "help", "-h", "--help":
         return usage
+
+    case "version", "--version":
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        #if arch(arm64)
+        let arch = "arm64"
+        #else
+        let arch = "x86_64"
+        #endif
+        return "macuse \(version) · macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion) · \(arch)"
 
     case "pos":
         let p = pointer()
@@ -1127,9 +1256,9 @@ func execute(_ args: [String]) throws -> String {
         for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
             let ax = AXUIElementCreateApplication(app.processIdentifier)
             AXUIElementSetMessagingTimeout(ax, 0.5)
-            for w in (ax.attr(kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
+            for w in realWindows(ax) {
                 let title = w.text(kAXTitleAttribute)
-                guard let f = frame(w), f.width > 1 else { continue }
+                guard let f = frame(w) else { continue }
                 let minimized = (w.attr(kAXMinimizedAttribute) as? Bool) == true
                 lines.append("\(app.localizedName ?? "?") — \"\(title)\"  at \(Int(f.minX)) \(Int(f.minY)) size \(Int(f.width))×\(Int(f.height))" + (minimized ? "  (minimized)" : ""))
             }
@@ -1179,7 +1308,9 @@ func execute(_ args: [String]) throws -> String {
         }
 
     case "ui":
-        let lines = dedupe(try frontTree(visibleOnly: !a.contains("--all")).map(line))
+        var nodes = try frontTree(visibleOnly: !a.contains("--all"))
+        if a.contains("--page") { nodes = nodes.filter { $0.inWeb } }            // the page, without the browser around it
+        let lines = dedupe(nodes.map(line))
         guard !lines.isEmpty else { throw Fail(message: "no named elements in the front window") }
         return lines.count > 200 ? (lines.prefix(200) + ["… \(lines.count - 200) more — narrow it with: where <text>"]).joined(separator: "\n")
                                  : lines.joined(separator: "\n")
@@ -1188,8 +1319,12 @@ func execute(_ args: [String]) throws -> String {
         let nodes = try frontTree(visibleOnly: !a.contains("--all"))
         let source = nodes.contains { $0.inWeb } ? nodes.filter { $0.inWeb } : nodes
         var lines: [String] = []
-        for n in source where textRoles.contains(n.role) {
-            let t = flat(n.name)
+        for n in source {
+            let t: String
+            if let v = n.value { t = "\(flat(n.name)): \"\(v)\"" }            // Name: "Grace Hopper"
+            else if let on = n.on { t = "\(flat(n.name)): \(on ? "on" : "off")" }
+            else if textRoles.contains(n.role) { t = flat(n.name) }
+            else { continue }
             if !t.isEmpty && lines.last != t { lines.append(t) }
         }
         guard !lines.isEmpty else { throw Fail(message: "no readable text in the front window") }
@@ -1350,13 +1485,16 @@ func execute(_ args: [String]) throws -> String {
         guard let url = a.first, url.hasPrefix("http://") || url.hasPrefix("https://") else {
             throw Fail(message: "open takes http(s) URLs only", code: 2)
         }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = a.count > 1 ? ["-a", a[1], url] : [url]
-        try p.run()
-        p.waitUntilExit()
-        if p.terminationStatus != 0 { throw Fail(message: "could not open \(url)") }
-        return "opened \(url)"
+        return try acting {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            p.arguments = a.count > 1 ? ["-a", a[1], url] : [url]
+            try p.run()
+            p.waitUntilExit()
+            if p.terminationStatus != 0 { throw Fail(message: "could not open \(url)") }
+            // The browser decides between a new tab and a new window; the report says which.
+            return "opened \(url)"
+        }
 
     case "upload":
         guard let file = a.first else { throw Fail(message: "upload needs a file path", code: 2) }

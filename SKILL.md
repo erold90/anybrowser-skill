@@ -36,10 +36,13 @@ that already says what changed. The forms it takes:
 |---|---|
 | `focus: Email [TextField] · value: "…"` | where the keyboard is now, and what that field holds |
 | `new window: "…"` · `window: "…" (sheet)` · `(file dialog)` | a window or dialog opened, or the front one changed |
+| `now showing "YouTube"` | the same window shows something else: a tab switched or closed, a page loaded |
 | `window closed — now in "…"` · `no window open` | a window went away |
 | `app: TextEdit → Safari` | another app came to the front |
-| `changed: "Sent" [StaticText]` | an element elsewhere changed its text — a status line, a label, a style menu |
-| `menu opened` | a menu or pop-up is showing |
+| `dialog: "Delete this file?" — buttons: Cancel, Delete` | an alert or sheet is asking something: answer with `click <button>` |
+| `page: "Payment failed"` | new text on a web page after the action — a status line, an error, a result |
+| `changed: "Sent" [StaticText]` | an element in a native app changed its text |
+| `menu open` | a menu or pop-up is still showing |
 | `the app reacted (…), nothing moved in focus` | something changed the report can't name: `read` if it matters |
 | `no reaction seen — confirm with read (or shot)` | the click may have missed, or the app draws its own UI |
 
@@ -73,6 +76,10 @@ so no `sleep` between steps.
 | Anything the tree can't see | `shot --window` (smaller than the whole screen), read it, `click X Y` — saved as `$TMPDIR/shot.png` unless you pass a name or an absolute `.png` path |
 | Another window | `windows` · `raise "Invoice"` |
 
+Names match exact first, then by prefix, then anywhere, among enabled elements —
+`click Send` picks "Send" over "Send draft", `click Sen` picks "Send". When two
+elements tie, the first in the window wins: `where` shows the candidates.
+
 `click <name>` moves the real pointer. `press <name>` triggers the control
 through accessibility without touching the pointer — use it when the user is
 working on the same Mac. Names follow the system language (`Formato`, not
@@ -83,9 +90,13 @@ any language.
 ## Web pages
 
 Safari and Chrome expose the page, so names work there too; `read` returns the
-page's text and not the toolbar. `fill`, `click` and `keys` send real input
+page's text and field values (`Email: "ada@example.com"`), not the toolbar, and
+`ui --page` lists only the page's elements. `open <url>` lands in a new tab or
+window as the browser decides; the report says which (`now showing "…"` for a tab).
+A JavaScript alert is reported as `dialog: "…" — buttons: …`: `click` the button,
+or `key return` for the default one. `fill`, `click` and `keys` send real input
 events, so pages that ignore scripted values see a person. For the system file
-picker: `click` the page's upload control, then `upload ~/file.png` — it checks
+picker: `click` the page's upload control or its label, then `upload ~/file.png` — it checks
 the dialog is really open first. The first read of a freshly launched Chrome
 takes ~3 s; so does the first read of an Electron app (VS Code, Slack, Notion,
 Claude desktop), which macuse wakes the same way.
@@ -135,7 +146,8 @@ $ mac.sh do 'menu TextEdit File New' 'type "Hello — città"' 'menu TextEdit Ed
 ## Commands
 
 ```
-LOOK   shot [name] [--window|--region X Y W H|--display N] · windows · where <text> · waitfor|waitgone <text> [secs] · read|ui [--all] · apps · menus <app> · pos
+LOOK   shot [name] [--window|--region X Y W H|--display N] · windows · where <text> · waitfor|waitgone <text> [secs]
+       read [--all] · ui [--all] [--page] · apps · menus <app> [<menu>...] · pos
 ACT    click|dclick|rclick X Y|<name> · press <name> · fill <field> "text" · select <menu> <option>
        type "text" · keys "text" · key <name> · hotkey "<mods>" <key>
        menu <app> <menu> [<submenu>...] <item> · focus <app> · raise <title> · open <url> [app] · upload <file>
