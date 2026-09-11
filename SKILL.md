@@ -1,6 +1,6 @@
 ---
 name: macuse
-description: Control the macOS desktop — see the screen and click, type, and drive any native app (Finder, Preview, Xcode, Blender, System Settings, installers). Use when the task needs an app that has no CLI or API, when you must read what is actually on screen, or when the user says "click", "open that app", "fill this window", "take a screenshot". Not for web pages when a browser tool is available, and not for anything a shell command already does well.
+description: Control the macOS desktop — see the screen and click, type, and drive any native app (Finder, Preview, Xcode, Blender, System Settings, installers). Use when the task needs an app that has no CLI or API, when you must read what is actually on screen, or when the user says "click", "open that app", "fill this window", "take a screenshot". On web pages, use it where a browser extension gets stuck — a native file picker, a JavaScript alert, a field that ignores scripted input, a browser other than Chrome — not as the first choice when a browser tool is available, and not for anything a shell command already does well.
 ---
 
 # macuse
@@ -49,6 +49,29 @@ polls until the element exists.
 Names follow the system language: on an Italian Mac it's `menu TextEdit Formato
 Font "Mostra font"`. Read them with `menus <app>` or `ui` rather than guessing.
 
+## Web pages
+
+Safari and Chrome expose the page to the accessibility tree, so names work
+there too, and `read` gives you the page's text for a fraction of a
+screenshot's cost:
+
+```
+open https://example.com
+waitfor "Sign in"
+read                              # the page's text, not the toolbar
+fill "Email" "me@example.com"     # by name, real keystrokes
+click "Continue"
+click "Upload logo"               # the page's own button opens the picker…
+upload ~/Desktop/logo.png         # …and this answers it
+```
+
+`fill` and `click` send real keystrokes and clicks, so pages that ignore
+scripted values (React forms) see a person typing. `upload` checks that the
+system Open dialog is really in front before typing a path. The first read of
+a freshly launched Chrome takes ~3 s while it builds the page tree. Button
+labels in dialogs follow the system language: an alert's button may be `Ok`,
+`OK` or `Chiudi` — read `ui` when unsure.
+
 ## Typing
 
 `type` pastes through the clipboard, so accents, dashes and emoji survive intact
@@ -81,8 +104,9 @@ give up after 20 s and say so — then `key esc` and try again.
 ## Commands
 
 ```
-LOOK   shot [name] · where <text> · waitfor <text> [secs] · ui · apps · menus <app>
-ACT    click X Y · dclick X Y · rclick X Y · drag X1 Y1 X2 Y2
+LOOK   shot [name] · where <text> · waitfor <text> [secs] · read · ui · apps · menus <app>
+WEB    open <url> [app] · fill <field> "text" · upload <file>
+ACT    click X Y · click <name> · dclick · rclick (either form) · drag X1 Y1 X2 Y2
        move X Y · pos · scroll N [dx]
        menu <app> <menu> [<submenu>...] <item> · focus <app>
        type "text" · keys "text" · key <name> · hotkey "cmd shift" s

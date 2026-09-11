@@ -40,11 +40,16 @@ LOOK
   where <text>             centre of the elements matching <text>, best first
   waitfor <text> [secs]    poll until <text> appears (default 10 s)
   ui                       named elements of the frontmost window
+  read                     the front window's text, in order — cheaper than a shot
   apps                     applications with open windows
   menus <app>              menu bar titles of an app
 
 ACT
   click X Y · dclick X Y · rclick X Y
+  click <name>             the same, on the best enabled match by name
+  fill <field> "text"      focus a text field by name, replace its content
+  open <url> [app]         open a web page, in the default browser or <app>
+  upload <file>            answer an open file dialog with a path
   drag X1 Y1 X2 Y2         press, glide, release
   move X Y · pos           move the pointer · print where it is
   scroll N [dx]            N lines: positive up, negative down
@@ -101,7 +106,53 @@ apps)  act apps ;;
 menus) act menus "${1:?need an app name}" ;;
 focus) act focus "${1:?need an app name}" ;;
 
-click|dclick|rclick|move|drag|scroll|pos|type|keys|key|hotkey|menu)
+click|dclick|rclick)
+  # "812 604" passed as one quoted argument is still a pair of coordinates.
+  if [ $# -eq 1 ] && [[ "$1" =~ ^(-?[0-9]+)[[:space:]]+(-?[0-9]+)$ ]]; then
+    set -- "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  fi
+  if [ $# -eq 1 ]; then
+    # By name: the best enabled match in the front window, then a real click.
+    hit=$(tree "$1" pick)
+    case "$hit" in "no element matching:"*|"the frontmost app has no window") echo "$hit" >&2; exit 1 ;; esac
+    pt="${hit%%$'\t'*}"
+    act "$cmd" "${pt% *}" "${pt#* }"
+    echo "${cmd}ed ${hit#*$'\t'} at $pt"
+  else
+    act "$cmd" "$@"
+  fi
+  ;;
+
+fill)
+  [ $# -eq 2 ] || { echo 'fill needs a field name and the text: fill "Email" "me@example.com"' >&2; exit 2; }
+  hit=$(tree "$1" field)
+  case "$hit" in "no element matching:"*|"the frontmost app has no window") echo "$hit" >&2; exit 1 ;; esac
+  pt="${hit%%$'\t'*}"
+  # Focus it like a person would, replace what's there, paste: the page gets
+  # real input events, not a value set behind its back.
+  act click "${pt% *}" "${pt#* }"
+  act hotkey cmd a
+  act type "$2"
+  echo "filled ${hit#*$'\t'}"
+  ;;
+
+read) tree "" text ;;
+
+open)
+  url="${1:?need a URL}"
+  [[ "$url" =~ ^https?:// ]] || { echo "open takes http(s) URLs only" >&2; exit 2; }
+  if [ -n "${2:-}" ]; then open -a "$2" "$url"; else open "$url"; fi
+  ;;
+
+upload)
+  # Answers the system Open dialog a browser can't script. Refuses to type
+  # anywhere unless that dialog is really in front.
+  f="${1:?need a file path}"
+  [ -e "$f" ] || { echo "no such file: $f" >&2; exit 1; }
+  act upload "$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
+  ;;
+
+move|drag|scroll|pos|type|keys|key|hotkey|menu)
   act "$cmd" "$@"
   ;;
 

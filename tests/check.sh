@@ -37,6 +37,11 @@ t "where exits 1 when nothing matches" refuses "$M" where "zz-no-such-element-zz
 t "hotkey without a key fails"        refuses "$M" hotkey cmd
 t "unknown key name fails"            refuses "$M" key nope
 t "pos prints two numbers"            bash -c "\"$M\" pos | grep -Eq '^-?[0-9]+ -?[0-9]+$'"
+t "fill needs a field and a text"     refuses "$M" fill Email
+t "open refuses non-web URLs"         refuses "$M" open "file:///etc/hosts"
+t "upload refuses a missing file"     refuses "$M" upload "$TMP/nope.txt"
+touch "$TMP/real.txt"
+t "upload types nothing without a dialog" bash -c "\"$M\" upload \"$TMP/real.txt\" 2>&1 | grep -q 'no file dialog in front'"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

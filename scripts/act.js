@@ -7,6 +7,9 @@
 ObjC.import("AppKit");
 ObjC.import("CoreGraphics");
 ObjC.bindFunction("AXIsProcessTrusted", ["bool", []]);
+ObjC.bindFunction("AXUIElementCreateApplication", ["id", ["int"]]);
+ObjC.bindFunction("AXUIElementCopyAttributeValue", ["int", ["id", "id", "id*"]]);
+ObjC.bindFunction("AXUIElementPerformAction", ["int", ["id", "id"]]);
 
 const se = () => Application("System Events");
 
@@ -148,6 +151,50 @@ function clickMenu(app, path) {
   menu.menuItems.byName(path[path.length - 1]).click();
 }
 
+// ---- file dialogs ------------------------------------------------------------
+
+function frontWindow() {
+  const app = $.AXUIElementCreateApplication($.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier);
+  const r = Ref();
+  return $.AXUIElementCopyAttributeValue(app, $("AXFocusedWindow"), r) === 0 ? r[0] : null;
+}
+
+function identifier(el) {
+  const r = Ref();
+  if (!el || $.AXUIElementCopyAttributeValue(el, $("AXIdentifier"), r) !== 0) return "";
+  const v = ObjC.unwrap(r[0]);
+  return typeof v === "string" ? v : "";
+}
+
+// The system Open panel carries the identifier "open-panel" in every language,
+// so we can check it is really there before typing a path into anything.
+function upload(path) {
+  needTrust("upload");
+  if (identifier(frontWindow()) !== "open-panel") {
+    throw new Error("no file dialog in front — click the page's upload button first");
+  }
+  hotkey("cmd shift", "g");          // Go to Folder
+  delay(0.8);
+  typeText(path);
+  delay(0.3);
+  se().keyCode(KEYS.return);         // go there, file selected
+  delay(1);
+  const panel = frontWindow();
+  if (identifier(panel) === "open-panel") {
+    const kids = Ref();
+    $.AXUIElementCopyAttributeValue(panel, $("AXChildren"), kids);
+    for (let i = 0; kids[0] && i < kids[0].count; i++) {
+      const k = kids[0].objectAtIndex(i);
+      if (identifier(k) === "OKButton") { $.AXUIElementPerformAction(k, $("AXPress")); break; }
+    }
+  }
+  for (let i = 0; i < 20; i++) {
+    if (identifier(frontWindow()) !== "open-panel") return `uploaded ${path}`;
+    delay(0.1);
+  }
+  throw new Error("the file dialog is still open — take a shot to see why");
+}
+
 // ---- dispatch ------------------------------------------------------------------
 
 function run(argv) {
@@ -188,6 +235,7 @@ function run(argv) {
       return;
     case "hotkey": hotkey(a[0] || "", a[1] || ""); return;
 
+    case "upload": return upload(a[0]);
     case "menu":   clickMenu(a[0], a.slice(1)); return;
     case "menus":  return se().processes.byName(a[0]).menuBars[0].menuBarItems.name().join("\n");
     case "focus":  Application(a[0]).activate(); return;

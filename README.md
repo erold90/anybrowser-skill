@@ -20,6 +20,8 @@ scripts/mac.sh click 812 604
 scripts/mac.sh menu TextEdit Format Font "Show Fonts"
 scripts/mac.sh type "già pronto — €50 ✓"
 scripts/mac.sh waitfor "Export" 15           # poll until the dialog is really there
+scripts/mac.sh fill "Email" "me@example.com" # web form, real keystrokes
+scripts/mac.sh upload ~/Desktop/logo.png     # the file picker a browser can't script
 ```
 
 ## Why it exists
@@ -68,8 +70,12 @@ restart your terminal — the permission attaches to the running process.
 | `shot [name]` | Capture the main display, scaled so pixels equal click points |
 | `where <text>` | Elements matching `<text>`, exact name first, with centre coordinates |
 | `waitfor <text> [secs]` | Poll until an element appears (default 10 s) |
+| `read` | The front window's text in order — on a web page, the page only |
 | `ui` · `apps` · `menus <app>` | What's on screen, what's running, what's in the menu bar |
-| `click` · `dclick` · `rclick X Y` | Single, double and right click |
+| `click` · `dclick` · `rclick` `X Y` or `<name>` | Single, double and right click, at a point or on the best match by name |
+| `fill <field> "text"` | Focus a text field by name and replace its content with real input |
+| `open <url> [app]` | Open a web page in the default browser, or in `<app>` |
+| `upload <file>` | Answer the system Open dialog — refuses if it isn't in front |
 | `drag X1 Y1 X2 Y2` · `move X Y` · `pos` · `scroll N [dx]` | The pointer |
 | `menu <app> <menu> [<submenu>…] <item>` | Pick a menu item by name, at any depth |
 | `type "text"` | Paste via the clipboard: keeps accents and emoji |
@@ -84,6 +90,25 @@ The skill tells the agent to reach for coordinates last, not first:
 1. **A menu command** → `menu` — names don't move when the window does
 2. **A named control** → `where` reads the accessibility tree, then `click`
 3. **Anything else** → `shot`, read it, `click`
+
+## On the web: where a browser extension gets stuck
+
+A browser extension works inside the page — it reads the DOM, runs JavaScript,
+and leaves your mouse alone. Use one when you have it. macuse is for the places
+an extension can't reach, because they aren't in the page:
+
+- **The system file picker.** `click` the page's upload button, then
+  `upload ~/logo.png`. It checks the Open dialog (identifier `open-panel`, the
+  same in every language) is really in front before typing a path, and
+  confirms it closed.
+- **JavaScript alerts.** They're ordinary windows to macOS: `click Ok`.
+- **Fields that ignore scripted values.** `fill` clicks the field and pastes, so
+  the page receives trusted input events. On `tests/page.html` (serve it with
+  `python3 -m http.server -d tests`), two `fill`s count as 2 real inputs and
+  0 synthetic, in Safari and Chrome.
+- **Any browser.** Safari exposes the page natively. Chrome builds its page tree
+  only when an assistive app asks; macuse asks the way VoiceOver does, and the
+  first read of a freshly launched Chrome takes about 3 s.
 
 ## How it works
 
@@ -119,6 +144,11 @@ Worth knowing before you install it:
   not with the exit code.
 - **`shot` captures the main display only.** Windows on a second monitor are
   outside the image.
+- **It borrows your mouse and keyboard.** You can't use the Mac while it works,
+  and it only sees the front window: no background tabs, no DOM, no JavaScript,
+  no network log. For a web page, a browser extension does more.
+- **Some Chromium-based desktop apps expose no page at all.** In our test the
+  ChatGPT app showed its window frame and nothing inside. `shot` and pixels.
 - **No pointer without Accessibility.** A plain `click` falls back to System
   Events, which only reaches elements that are in the accessibility tree;
   `dclick`, `rclick`, `drag`, `move` and `scroll` refuse to run and say why.

@@ -1,0 +1,19 @@
+<!doctype html><html lang="it"><head><meta charset="utf-8"><title>macuse test</title>
+<style>body{font:16px -apple-system;margin:40px;max-width:640px} label,input,button{display:block;margin:8px 0} input{font-size:16px;padding:6px;width:320px} button{font-size:16px;padding:6px 14px}</style></head>
+<body>
+<h1>Pagina di prova macuse</h1>
+<label for="nome">Nome</label><input id="nome" aria-label="Nome">
+<input id="email" placeholder="Email" aria-label="Email">
+<p id="reali">input reali: 0 · sintetici: 0</p>
+<button id="avviso">Mostra avviso</button>
+<label for="file">Carica file</label><input type="file" id="file" aria-label="Carica file">
+<button id="spento" disabled>Invia bozza</button>
+<button id="invia">Invia</button>
+<p id="stato">stato: pronto</p>
+<script>
+let t=0,u=0; const R=document.getElementById('reali'), S=document.getElementById('stato');
+for (const id of ['nome','email']) document.getElementById(id).addEventListener('input', e => { e.isTrusted ? t++ : u++; R.textContent = `input reali: ${t} · sintetici: ${u}`; });
+document.getElementById('avviso').onclick = () => { alert('Avviso di prova'); S.textContent = 'stato: avviso chiuso'; };
+document.getElementById('file').onchange = e => { S.textContent = 'stato: file ' + (e.target.files[0]||{}).name; };
+document.getElementById('invia').onclick = () => { S.textContent = `stato: inviato nome=${nome.value} email=${email.value} file=${(file.files[0]||{}).name||'-'}`; };
+</script></body></html>
