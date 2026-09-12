@@ -63,3 +63,22 @@ round also shows whether the tool's messages about the app in front are enough.
 History: 3/3 tasks, every step, 16 calls in ~4 min; 13 frictions — date and time fields,
 a quit report quoting the terminal, System Settings changing panes silently, radios read
 as covered mid-scroll, cut text unmarked — all fixed in `2192cc7`.
+
+## 5. Chrome, Gmail and audits
+
+In the user's Chrome, each in a window of the agent's own:
+
+1. Gmail: the Inbox's unread count, a search in Sent (a count), open the newest result and
+   come back, compose a draft to the account's own address and discard it (never send),
+   check Drafts holds no such message. The report quotes no mail at all.
+2. `audit` of the user's own sites: a crawl with links, a phone on slow 4G, the page in front
+   without an address; how it compares with DevTools by hand.
+3. GitHub, signed out: a repository's stars, then the count of open bugs from its Issues search.
+4. A news site with a consent banner: refuse what can be refused, report the headline.
+
+History: 4/4 tasks in 34 calls, ~10 min; audits 2.6–3.8 s each. 16 frictions, fixed:
+`focus chrome` and `quit chrome` didn't know the short name; `tab new` returned on the
+new-tab page; single-page apps (Gmail, GitHub) moved on unreported or reported as a load;
+`find` missed a consent panel in a frame and couldn't count rows; the crawl and link check
+didn't say what they skipped; zoom blocking, moving elements, robots.txt and the sitemap
+weren't in audits.

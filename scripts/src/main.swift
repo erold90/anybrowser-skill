@@ -499,7 +499,9 @@ func perform(_ args: [String]) throws -> String {
         // Clicking into a field or a toggle doesn't load pages; links and buttons can.
         let navigates = target.inWeb && button == .left && !inputRoles.contains(target.role) && !toggleRoles.contains(target.role)
             && target.role != "PopUpButton"
-        return try acting(mayNavigate: navigates) {
+        // A link, or text inside one, may move a single-page app on — slowly.
+        let link = navigates && (target.role == "Link" || hasAncestor(target.el, role: "Link"))
+        return try acting(mayNavigate: navigates, link: link) {
             click(target.point!, button: button, count: count)
             return "\(cmd)ed \(label(target)) at \(Int(target.point!.x)) \(Int(target.point!.y))"
         }
@@ -738,7 +740,7 @@ func perform(_ args: [String]) throws -> String {
             }
             if inWindow { rememberFrontWindow(browser) }
             guard url != nil else { return "opened a new \(inWindow ? "window" : "tab") in \(browserName(browser))" }
-            return loadedReport("new \(inWindow ? "window" : "tab") in \(browserName(browser)):", waitLoad(browser, from: nil, seconds: 20), started)
+            return loadedReport("new \(inWindow ? "window" : "tab") in \(browserName(browser)):", waitLoad(browser, from: nil, seconds: 20, opening: true), started)
         }
         if sub == "close" {
             let browser = try targetBrowser()
@@ -817,7 +819,7 @@ func perform(_ args: [String]) throws -> String {
         }
         rememberFrontWindow(browser)
         guard url != nil else { return "opened a private window in \(browserName(browser))" }
-        return loadedReport("private window in \(browserName(browser)):", waitLoad(browser, from: nil, seconds: 20), started)
+        return loadedReport("private window in \(browserName(browser)):", waitLoad(browser, from: nil, seconds: 20, opening: true), started)
 
     case "go":
         guard let raw = a.first else { throw Fail(message: "go needs an address: go example.com", code: 2) }
@@ -837,7 +839,7 @@ func perform(_ args: [String]) throws -> String {
         if mark.web != nil, !until(1.2, { navigationStarted(pid: browser.processIdentifier, since: mark) }) {
             r = waitLoad(browser, from: nil, seconds: secs)
             guard r.done else { throw Fail(message: "still loading after \(Int(secs)) s: \(r.url)") }
-            return loadedReport("loaded", r, started) + " — no navigation was under way"
+            return "no navigation under way — showing \"\(clip(flat(r.title), 90))\" — \(r.url)"
         }
         r = waitLoad(browser, from: mark.web == nil ? nil : mark, seconds: secs)
         guard r.done else { throw Fail(message: "still loading after \(Int(secs)) s: \(r.url)") }
@@ -913,19 +915,46 @@ func perform(_ args: [String]) throws -> String {
                      "checkbox": "AXCheckBoxSearchKey", "radio": "AXRadioGroupSearchKey", "heading": "AXHeadingSearchKey",
                      "table": "AXTableSearchKey", "image": "AXGraphicSearchKey", "list": "AXListSearchKey",
                      "landmark": "AXLandmarkSearchKey", "frame": "AXFrameSearchKey", "control": "AXControlSearchKey",
-                     "focusable": "AXKeyboardFocusableSearchKey", "any": "AXAnyTypeSearchKey"]
+                     "focusable": "AXKeyboardFocusableSearchKey", "any": "AXAnyTypeSearchKey", "row": "row"]
         guard let kind = a.first, let key = kinds[kind.lowercased().hasSuffix("s") ? String(kind.lowercased().dropLast()) : kind.lowercased()] else {
             throw Fail(message: "find needs a kind: \(kinds.keys.sorted().joined(separator: ", ")) — then optional text", code: 2)
         }
         let browser = try targetBrowser()
         let (_, web) = try browserPage(browser)
-        let text = a.dropFirst().joined(separator: " ")
-        let hits = webSearch(web, key, text: text.isEmpty ? nil : text, limit: 500)
+        let countOnly = a.contains("--count")
+        let text = a.dropFirst().filter { $0 != "--count" }.joined(separator: " ")
+        let singular = kind.lowercased().hasSuffix("s") ? String(kind.lowercased().dropLast()) : kind.lowercased()
+        var hits: [AXUIElement] = []
+        if key == "row" {
+            // No search key for rows: walk the page for them (tables, grids, mail lists).
+            var visited = 0
+            func visit(_ e: AXUIElement, _ depth: Int) {
+                guard depth < 60, visited < 30_000 else { return }
+                visited += 1
+                if e.role == "Row" {
+                    if text.isEmpty || score(cellText(e), text) != nil { hits.append(e) }
+                    return
+                }
+                for k in e.children { visit(k, depth + 1) }
+            }
+            visit(web, 0)
+        } else {
+            hits = webSearch(web, key, text: text.isEmpty ? nil : text, limit: 500)
+            // A frame keeps an index of its own: consent panels and embedded forms live in one.
+            for frameElement in webSearch(web, "AXFrameSearchKey", limit: 20) {
+                if let inner = webArea(in: frameElement), !CFEqual(inner, web) {
+                    hits += webSearch(inner, key, text: text.isEmpty ? nil : text, limit: 200)
+                }
+            }
+        }
+        if countOnly {
+            return "\(hits.count) \(singular)\(hits.count == 1 ? "" : "s")" + (text.isEmpty ? "" : " matching \(text)")
+        }
         var nodes: [Node] = []
         for el in hits {
             var node = walk(el, maxDepth: 0, inWeb: true).nodes.first
-                ?? Node(el: el, name: "", role: el.role, point: frame(el).map { CGPoint(x: $0.midX.rounded(), y: $0.midY.rounded()) },
-                        disabled: false, inWeb: true)
+                ?? Node(el: el, name: key == "row" ? clip(cellText(el), 100) : "", role: el.role,
+                        point: frame(el).map { CGPoint(x: $0.midX.rounded(), y: $0.midY.rounded()) }, disabled: false, inWeb: true)
             if node.name.isEmpty, key == "AXTableSearchKey" {
                 // Which table is which: its size and how it starts.
                 let rows = (el.attr(kAXRowsAttribute) as? [AXUIElement]) ?? []
@@ -1075,6 +1104,13 @@ func perform(_ args: [String]) throws -> String {
             default:
                 break
             }
+        }
+        // Installed browsers that aren't running: their checks come once they run.
+        let runningNames = Set(runningBrowsers().compactMap { $0.localizedName })
+        for (app, alias) in [("Safari", "safari"), ("Google Chrome", "chrome"), ("Chromium", "chromium"), ("Microsoft Edge", "edge"),
+                             ("Brave Browser", "brave"), ("Firefox", "firefox"), ("Arc", "arc")]
+        where !runningNames.contains(app) && FileManager.default.fileExists(atPath: "/Applications/\(app).app") {
+            lines.append(app.padding(toLength: max(18, app.count + 2), withPad: " ", startingAt: 0) + "not running — focus \(alias) starts it")
         }
         switch protected(home + "/Library/Safari/Bookmarks.plist") {
         case .some(true): lines.append("full disk access  off — Safari history and bookmarks are read from its own views (slower, no visit times); optional")

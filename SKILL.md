@@ -25,7 +25,7 @@ binary, ~30 s). Before the first task: `scripts/anybrowser.sh check`.
 | Read a page | `text` — the whole page in one call, line by line; `text --main` — just the article, without menus and sidebars; `--max N` characters (default 12000) | 20–150 ms |
 | Read what's visible, with field values | `read` (`--all`: off-screen too, up to 400 lines — for long pages use `text`) | |
 | Links and where they go | `links` · `links invoice` — matches text or address, any case (`--url`: address only); identical links listed once, marked `(×3)`; the last line counts them, `--count` prints only that | |
-| Find an element | `find button Send` · `find field` · `find heading` · `where Send` | 5–150 ms |
+| Find an element | `find button Send` · `find field` · `find heading` · `where Send` · `--count` for a number only · `find row --count` counts a table's or a mail list's rows without reading them | 5–150 ms |
 | A table | `find table` (each with its size and first cells) · `table 2` (a long cell ends in `…`) | |
 | Act | `click Send` · `fill Email "a@b.c"` · `select Plan Pro` · `click @3` | 0.2–0.6 s |
 | Wait / check | `waitfor "Order placed" 15` · `waitgone Loading` · `expect "Saved"` · `waitload` | |
@@ -62,6 +62,7 @@ that already says what changed.
 | `dialog: "Delete this file?" — buttons: Cancel, Delete` | an alert or sheet is asking: `click <button>`, or `key return` for the default |
 | `new window: "…"` · `(sheet)` · `(file dialog) · pick the file with: upload <path>` | a window or dialog opened |
 | `now showing "…"` · `new tab: "…" (in the background)` · `tab closed` | the tabs changed |
+| `address: … (same page, changed in place)` | a single-page app (Gmail, GitHub, Google Voli) or a `#fragment` moved on without loading; the `page:` lines after it say what changed |
 | `app: Safari → Finder` | another app came to the front |
 | `selected: "report.pdf"` · `changed: "Sent" [StaticText]` · `menu open` | native apps |
 | `the app reacted (…), nothing moved in focus` | something changed the report can't name: `text` or `read` if it matters |
@@ -104,6 +105,8 @@ anybrowser.sh do 'go shop.example.com/login' 'fill Email "ada@example.com"' 'fil
 `do` stops at the first failing step and says which, with each step's time; `expect`
 turns a step into a check. For a long flow, one step per line: `anybrowser.sh do - <<'EOF' … EOF`.
 Lookups by name wait up to 2 s for the element, so no `sleep` between steps.
+Each step is split like a shell command: quote an argument with spaces, and put double
+quotes inside single ones — `fill "Cerca nella posta" 'in:drafts "test"'`.
 
 **Refs.** `where`, `ui`, `find` and `links` number what they list — `@1`, `@2` —
 and `click @2`, `fill @1 "…"`, `select @4 Pro`, `shot x --element @3` use exactly
@@ -187,6 +190,7 @@ How to run a whole audit and what each finding usually means: `playbooks/audit.m
 Read the one that fits before starting — names, recipes and traps already met:
 
 - `playbooks/audit.md` — auditing a site: the order of work, reading the findings, the usual fixes
+- `playbooks/flights.md` — flight prices with bags and offers: Google Voli for the overview, the airline for the exact fare
 
 - `playbooks/safari.md` — toolbar ids, menus, settings panes, history and bookmarks without Full Disk Access
 - `playbooks/chrome.md` — Chrome and Chromium: profiles, files, settings pages, alerts, bookmarks
@@ -196,7 +200,7 @@ Read the one that fits before starting — names, recipes and traps already met:
 
 The same commands drive any app: `menu TextEdit Format Font "Show Fonts"`,
 `click "Save"`, `menus <app>` (a menu's items, `▸` = submenu), `focus <app>`
-(launches it and says so — quit only apps you launched), `quit <app>`, `windows` · `raise "Invoice"` ·
+(launches it and says so — quit only apps you launched; browsers answer to `chrome`, `edge`, `brave`), `quit <app>`, `windows` · `raise "Invoice"` ·
 `window move|resize|maximize|minimize|restore|fullscreen|close`, `shot --window`
 for what the tree can't see (a pixel in the image is the point to click); `--zoom 2` makes
 small text readable (then halve a pixel's coordinates).
@@ -244,7 +248,7 @@ CHAIN   do "<cmd>" "<cmd>" ...  ·  do -   (steps from stdin)
 CHECK   check · version
 ```
 
-`find` kinds: link button field checkbox radio heading table image list landmark frame control focusable any.
+`find` kinds: link button field checkbox radio heading table row image list landmark frame control focusable any — frames (consent panels) included; `--count` for the number only.
 Environment: `ANYBROWSER_BROWSER=safari`; `ANYBROWSER_SETTLE=0` skips the reaction wait and report;
 `ANYBROWSER_GLIDE=0` makes the pointer jump; `ANYBROWSER_WAIT` is the lookup wait in seconds;
 `ANYBROWSER_HOST=Terminal` names the app you run in when `check` finds none (tmux, ssh).

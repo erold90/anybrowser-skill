@@ -48,7 +48,11 @@ hardening (headers, cookies). Quote the finding lines as they are; they're alrea
 | `slow … the server took 1.8 s` | a slow backend or cold serverless function | cache it, or move it off the page's first load |
 | `heavy /hero.png — 1.4 MB` | an image far bigger than shown | resize, then WebP/AVIF |
 | `uncompressed /app.js — 300 KB` | the server doesn't gzip or brotli | turn on compression at the host or CDN |
-| `issue LowTextContrast: 3.10, needs 4.5 — .footer p` | text too light on its background | darken the text or the background for that selector |
+| `issue LowTextContrast: 11 elements, worst 1.20 where 3.0 is needed — h2.h2, …` | text too light on its background, the worst first | darken the text or its background for those selectors; a ratio near 1.0 is often text over an image or a gradient, which Chrome can't measure: look at it before reporting |
+| `CLS 0.16 (high: div.hero, img.logo moved)` | those elements move while the page loads | give them a width and height (or `aspect-ratio`), reserve room for what loads late |
+| `the viewport blocks zooming (width=device-width, user-scalable=no)` | people with poor sight can't pinch to zoom | drop `user-scalable=no` and `maximum-scale=1` |
+| `search   no robots.txt · no sitemap` | search engines get no map of the site | add `/robots.txt` naming `Sitemap: https://site/sitemap.xml`, and the sitemap itself |
+| `search   robots.txt BLOCKS every search engine from every page` | a `Disallow: /` left from development | remove it, unless the site really must stay out of search |
 | `issue GenericIssue: FormLabelForNameError` and similar | form fields Chrome can't tie to a label | a `<label for>` or `aria-label` |
 | `LCP 3.2 s (slow)` | the largest image or text block comes late | preload the hero image, serve it smaller, avoid render-blocking CSS and JS |
 | `CLS 0.16 (high)` | things move while loading | give images, embeds and ads a width and height (or `aspect-ratio`) |

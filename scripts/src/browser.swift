@@ -410,7 +410,30 @@ func tidyText(_ text: String) -> String {
         if line.isEmpty { if let last = out.last, !last.isEmpty { out.append("") } }
         else { out.append(flat(line)) }
     }
-    return out.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    return joinPriceFragments(out).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// A price laid out in pieces — "€", "19", ",", "99" on lines of their own (Ryanair in
+/// Safari) — reads as one: "€ 19,99".
+func joinPriceFragments(_ lines: [String]) -> [String] {
+    let currency: Set<String> = ["€", "$", "£", "¥", "CHF", "EUR", "USD", "GBP"]
+    var out: [String] = []
+    for line in lines {
+        guard !line.isEmpty, let i = out.lastIndex(where: { !$0.isEmpty }), out.count - 1 - i <= 1 else { out.append(line); continue }
+        let last = out[i]
+        let digits = line.allSatisfy { $0.isNumber }
+        var glued: String? = nil
+        if currency.contains(last) && line.first?.isNumber == true { glued = last + " " + line }
+        else if (line == "," || line == ".") && last.last?.isNumber == true { glued = last + line }
+        else if digits && (last.hasSuffix(",") || last.hasSuffix(".")) && last.dropLast().last?.isNumber == true { glued = last + line }
+        if let g = glued {
+            out.removeSubrange((i + 1)...)
+            out[i] = g
+        } else {
+            out.append(line)
+        }
+    }
+    return out
 }
 
 /// The browser's own element search, by kind and text: AXLinkSearchKey,
@@ -497,11 +520,33 @@ func navigationStarted(pid: pid_t, since mark: PageMark) -> Bool {
     return (web.attr("AXLoaded") as? Bool) == false && mark.loaded != false
 }
 
+/// Moved on without leaving: the same document under a new address — a #fragment, a
+/// single-page app's pushState (Gmail, GitHub, Google Voli). Nothing loads.
+func sameDocument(pid: pid_t, since mark: PageMark) -> Bool {
+    let app = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(app, 0.5)
+    guard let m = mark.web, let win = app.element(kAXFocusedWindowAttribute), let web = webArea(in: win) else { return false }
+    return CFEqual(m, web) && !safariLoading(win) && (web.attr("AXLoaded") as? Bool) != false
+}
+
+/// New content arriving after an in-place move: wait until the page's text holds still.
+func settleText(_ seconds: Double = 3) {
+    var last = pageState()?.text ?? ""
+    var still = now()
+    let deadline = now() + seconds
+    while now() < deadline {
+        pause(120)
+        let text = pageState()?.text ?? ""
+        if text != last { last = text; still = now() } else if now() - still >= 0.4 { break }
+    }
+}
+
 /// Wait for the page in the browser's front window to finish loading. With a mark
 /// taken before the action, first for that page to be left: its address changes,
 /// its web area is replaced (a reload builds a new one), or loading visibly starts.
 /// `scripted` is the address the script saw, for when accessibility had no page yet.
-func waitLoad(_ browser: NSRunningApplication, from mark: PageMark?, scripted: String? = nil, seconds: Double) -> (done: Bool, url: String, title: String) {
+func waitLoad(_ browser: NSRunningApplication, from mark: PageMark?, scripted: String? = nil, seconds: Double,
+              opening: Bool = false) -> (done: Bool, url: String, title: String) {
     let pid = browser.processIdentifier
     let app = AXUIElementCreateApplication(pid)
     AXUIElementSetMessagingTimeout(app, 1)
@@ -509,6 +554,7 @@ func waitLoad(_ browser: NSRunningApplication, from mark: PageMark?, scripted: S
     var left = mark == nil
     var url = "", title = ""
     var woke = false
+    let markTitle = mark.flatMap { m in m.web.flatMap { w in m.window.map { pageTitle(w, $0) } } }
     while now() - start < seconds {
         if let win = app.element(kAXFocusedWindowAttribute) ?? app.element(kAXMainWindowAttribute) {
             if !woke { woke = true; wakeWebTree(app, pid: pid) }
@@ -527,7 +573,15 @@ func waitLoad(_ browser: NSRunningApplication, from mark: PageMark?, scripted: S
                     else if !loaded || now() - start > 1.5 { left = true }
                 }
                 // Safari's own flag first: until it clears, the page shown may still be the old one.
-                if left && !pending && loaded && !busy && !url.isEmpty { return (true, url, title) }
+                // A tab asked to open an address shows the new-tab page first: that isn't the page wanted.
+                if left && !pending && loaded && !busy && !url.isEmpty && !(opening && blankPage(url)) {
+                    // A single-page app changes its address before its title: give the title a moment.
+                    if let m = mark?.web, CFEqual(m, web), let old = markTitle, title == old {
+                        _ = until(1) { pageTitle(web, win) != old }
+                        title = pageTitle(web, win)
+                    }
+                    return (true, url, title)
+                }
             }
         }
         pause(30)
@@ -536,6 +590,13 @@ func waitLoad(_ browser: NSRunningApplication, from mark: PageMark?, scripted: S
 }
 
 func seconds(_ since: Double) -> String { String(format: "%.1f s", now() - since) }
+
+/// A browser's own empty page, shown while an address is on its way.
+func blankPage(_ url: String) -> Bool {
+    let u = url.lowercased()
+    return u.isEmpty || u == "about:blank" || u.hasPrefix("chrome://new") || u.hasPrefix("edge://newtab") || u.hasPrefix("brave://newtab")
+        || u.hasPrefix("favorites://") || u.hasPrefix("safari-resource:")
+}
 
 // MARK: - Menu commands by shortcut
 

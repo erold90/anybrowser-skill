@@ -151,9 +151,13 @@ final class Headless {
         try? fm.removeItem(atPath: portFile)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
+        // Nothing a visit doesn't need: no keychain (a fresh profile asks macOS for one), no sync,
+        // updates or background fetches. Measured: 0.9–1.3 s to listen, against 1.2–1.9 s without.
         process.arguments = ["--headless=new", "--remote-debugging-port=0", "--user-data-dir=\(dir)", "--no-first-run",
                              "--no-default-browser-check", "--disable-extensions", "--mute-audio", "--hide-scrollbars",
-                             "--window-size=1366,900", "about:blank"]
+                             "--use-mock-keychain", "--password-store=basic", "--disable-background-networking",
+                             "--disable-component-update", "--disable-sync", "--disable-default-apps", "--metrics-recording-only",
+                             "--disable-features=Translate,OptimizationHints,MediaRouter", "--window-size=1366,900", "about:blank"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
@@ -206,10 +210,16 @@ final class Headless {
 /// Injected before any script of the page: the Core Web Vitals as the page itself sees them.
 let vitalsScript = #"""
 (() => {
-  const ab = window.__anybrowserAudit = { lcp: 0, cls: 0, longTasks: 0, longMs: 0 };
+  const ab = window.__anybrowserAudit = { lcp: 0, cls: 0, longTasks: 0, longMs: 0, shifts: {} };
+  const name = n => n && n.nodeType === 1 ? n.tagName.toLowerCase() + (n.id ? '#' + n.id : '')
+    + (n.classList && n.classList.length ? '.' + Array.from(n.classList).slice(0, 2).join('.') : '') : null;
   const watch = (type, each) => { try { new PerformanceObserver(list => list.getEntries().forEach(each)).observe({ type, buffered: true }); } catch (e) {} };
   watch('largest-contentful-paint', e => { ab.lcp = e.startTime; });
-  watch('layout-shift', e => { if (!e.hadRecentInput) ab.cls += e.value; });
+  watch('layout-shift', e => {
+    if (e.hadRecentInput) return;
+    ab.cls += e.value;
+    for (const s of e.sources || []) { const k = name(s.node); if (k) ab.shifts[k] = (ab.shifts[k] || 0) + e.value; }
+  });
   watch('longtask', e => { ab.longTasks++; ab.longMs += e.duration; });
 })();
 """#
@@ -242,7 +252,8 @@ let pageScript = #"""
     links: [...new Set(all('a[href]').map(a => a.href).filter(h => /^https?:/i.test(h)).map(h => h.split('#')[0]))],
     nodes: document.getElementsByTagName('*').length,
     ttfb: nav.responseStart || null, domContentLoaded: nav.domContentLoadedEventEnd || null, load: nav.loadEventEnd || null,
-    fcp: fcp ? fcp.startTime : null, lcp: ab.lcp || null, cls: ab.cls ?? null, longTasks: ab.longTasks || 0, longMs: ab.longMs || 0
+    fcp: fcp ? fcp.startTime : null, lcp: ab.lcp || null, cls: ab.cls ?? null, longTasks: ab.longTasks || 0, longMs: ab.longMs || 0,
+    shifts: Object.entries(ab.shifts || {}).sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0])
   });
 })()
 """#
@@ -638,6 +649,7 @@ func tryCDP(_ cdp: CDP, _ method: String, _ params: [String: Any] = [:], session
 
 func runAudit(_ o: AuditOptions, note: String) throws -> String {
     let started = now()
+    debug("audit: starting the browser")
     let chrome = try Headless(profile: o.profile)
     defer { chrome.stop() }
     debug("audit: browser up")
@@ -702,10 +714,57 @@ func runAudit(_ o: AuditOptions, note: String) throws -> String {
         }
         broken.sort { $0.url < $1.url }
     }
+    let search = pages.first.map { $0.failure == nil ? searchLine($0.address, agent: agent) : "" } ?? ""
     let browser = chrome.browser
     let seconds = now() - started
-    return o.json ? auditJSON(pages, broken: broken, checked: checked, browser: browser, seconds: seconds)
-                  : auditText(pages, o, broken: broken, checked: checked, browser: browser, seconds: seconds, note: note)
+    return o.json ? auditJSON(pages, broken: broken, checked: checked, browser: browser, seconds: seconds, search: search)
+                  : auditText(pages, o, broken: broken, checked: checked, browser: browser, seconds: seconds, note: note, search: search)
+}
+
+/// robots.txt, and the sitemap it names or /sitemap.xml: what a search engine reads first.
+func searchLine(_ address: String, agent: String) -> String {
+    guard let url = URL(string: address), let scheme = url.scheme, let host = url.host else { return "" }
+    let origin = "\(scheme)://\(host)" + (url.port.map { ":\($0)" } ?? "")
+    final class Box { var status = 0; var body = "" }
+    func get(_ u: String) -> Box {
+        let box = Box()
+        guard let target = URL(string: u) else { return box }
+        var request = URLRequest(url: target, timeoutInterval: 8)
+        request.setValue(agent, forHTTPHeaderField: "User-Agent")
+        let done = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            box.status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            box.body = data.map { String(decoding: $0.prefix(3_000_000), as: UTF8.self) } ?? ""
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 10)
+        return box
+    }
+    var parts: [String] = []
+    var named: [String] = []
+    let robots = get(origin + "/robots.txt")
+    // A site that answers every address with its home page (a single-page app) has no robots.txt either.
+    if robots.status == 200 && !robots.body.lowercased().contains("<html") {
+        var everyone = false, blocksAll = false
+        for raw in robots.body.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces), lower = line.lowercased()
+            if lower.hasPrefix("sitemap:") { named.append(String(line.dropFirst(8)).trimmingCharacters(in: .whitespaces)) }
+            if lower.hasPrefix("user-agent:") { everyone = lower.replacingOccurrences(of: " ", with: "") == "user-agent:*" }
+            if everyone && lower.replacingOccurrences(of: " ", with: "") == "disallow:/" { blocksAll = true }
+        }
+        parts.append(blocksAll ? "robots.txt BLOCKS every search engine from every page" : "robots.txt ok")
+    } else {
+        parts.append("no robots.txt")
+    }
+    let map = named.first ?? origin + "/sitemap.xml"
+    let sitemap = get(map)
+    if sitemap.status == 200 && (sitemap.body.contains("<urlset") || sitemap.body.contains("<sitemapindex")) {
+        let entries = sitemap.body.components(separatedBy: "<loc>").count - 1
+        parts.append("sitemap \(shortURL(map, address)) " + (sitemap.body.contains("<sitemapindex") ? "indexes \(entries) sitemaps" : "lists \(entries) addresses"))
+    } else {
+        parts.append(named.isEmpty ? "no sitemap (none named in robots.txt, none at /sitemap.xml)" : "the sitemap robots.txt names doesn't answer: \(map)")
+    }
+    return parts.joined(separator: " · ")
 }
 
 /// Every link, HEAD first and GET when a server refuses HEAD, eight at a time.
@@ -763,7 +822,12 @@ func speedLine(_ p: PageReport) -> String {
     if let t = ttfb { parts.append("TTFB \(millis(t))" + (t > 800 ? " (slow)" : "")) }
     if let t = v("fcp") { parts.append("FCP \(millis(t))" + (t > 1800 ? " (slow)" : "")) }
     if let t = v("lcp") { parts.append("LCP \(millis(t))" + (t > 4000 ? " (poor)" : t > 2500 ? " (slow)" : "")) }
-    if let c = v("cls") { parts.append(String(format: "CLS %.2f", c) + (c > 0.25 ? " (poor)" : c > 0.1 ? " (high)" : "")) }
+    if let c = v("cls") {
+        // Which elements moved, the most first: what to give a size to.
+        let movers = (p.info["shifts"] as? [String] ?? []).joined(separator: ", ")
+        let grade = c > 0.25 ? "poor" : c > 0.1 ? "high" : ""
+        parts.append(String(format: "CLS %.2f", c) + (grade.isEmpty ? "" : " (\(grade)" + (movers.isEmpty ? "" : ": \(movers) moved") + ")"))
+    }
     if let t = v("load") { parts.append("load \(millis(t))") }
     if let n = v("longTasks"), n > 0 { parts.append("\(Int(n)) long task\(n == 1 ? "" : "s") (\(millis(v("longMs") ?? 0)))") }
     if let n = v("nodes") { parts.append("\(Int(n)) elements" + (n > 1500 ? " (many)" : "")) }
@@ -797,7 +861,11 @@ func pageFacts(_ p: PageReport) -> (facts: String, problems: [String]) {
     if title.isEmpty { problems.append("no title") } else { facts.append("title \"\(clip(title, 70))\" (\(title.count) chars\(title.count > 60 ? ", long" : ""))") }
     if let d = i["description"] as? String, !d.isEmpty { facts.append("description \(d.count) chars") } else { problems.append("no meta description") }
     if let l = i["lang"] as? String, !l.isEmpty { facts.append("lang \(l)") } else { problems.append("no lang on <html>") }
-    if (i["viewport"] as? String ?? "").isEmpty { problems.append("no viewport meta") }
+    let viewport = i["viewport"] as? String ?? ""
+    if viewport.isEmpty { problems.append("no viewport meta") }
+    if viewport.range(of: #"user-scalable\s*=\s*(no|0)|maximum-scale\s*=\s*1(\.0+)?(\s|,|$)"#, options: [.regularExpression, .caseInsensitive]) != nil {
+        problems.append("the viewport blocks zooming (\(clip(viewport, 70)))")
+    }
     if i["canonical"] as? String != nil { facts.append("canonical ok") } else { problems.append("no canonical") }
     let h1 = i["h1"] as? [String] ?? []
     if h1.isEmpty { problems.append("no h1") } else if h1.count > 1 { problems.append("\(h1.count) h1") } else { facts.append("h1 \"\(clip(h1[0], 50))\"") }
@@ -876,7 +944,7 @@ func findingLines(_ findings: [(page: String, finding: Finding)], pageColumn: In
 }
 
 func auditText(_ pages: [PageReport], _ o: AuditOptions, broken: [(url: String, result: String, on: [String])], checked: Int,
-               browser: String, seconds: Double, note: String) -> String {
+               browser: String, seconds: Double, note: String, search: String) -> String {
     guard let first = pages.first else { return "audit \(o.url): nothing audited" }
     var out: [String] = []
     let how = "\(browser) headless" + (o.mobile ? ", phone" : "") + (o.slow ? ", slow 4G + CPU ×4" : "") + (o.profile ? ", audit profile" : "")
@@ -884,7 +952,8 @@ func auditText(_ pages: [PageReport], _ o: AuditOptions, broken: [(url: String, 
     if pages.count == 1 {
         if let failure = first.failure { return "audit \(first.url) — the page didn't load: \(failure)\(note)" }
         let moved = pageKey(first.address) != pageKey(first.url) ? " \(first.address)" : ""
-        out.append("audit \(first.url) → \(first.status)\(moved) in \(String(format: "%.1f", seconds)) s (\(how))\(note)")
+        out.append("audit \(first.url) → \(first.status)\(moved) · page \(String(format: "%.1f", first.seconds)) s · audit \(String(format: "%.1f", seconds)) s with the browser's start (\(how))\(note)")
+        if o.crawl > 1 { out.append("crawl    this page links to no other page of the site: 1 page audited") }
         if let m = first.main, !m.redirects.isEmpty {
             out.append("redirects " + m.redirects.map { "\($0.status) \(shortURL($0.url, base))" }.joined(separator: " → ") + " → \(first.status)")
         }
@@ -922,15 +991,18 @@ func auditText(_ pages: [PageReport], _ o: AuditOptions, broken: [(url: String, 
         out.append("weight   " + weightLine(first) + label)
         let security = securityLine(first)
         if !security.isEmpty { out.append("security " + security) }
+        if !search.isEmpty { out.append("search   " + search) }
     }
     if o.links {
         let scope = o.allLinks ? "all links" : "links on this site"
+        let external = Set(pages.flatMap { $0.links }.filter { !sameSite($0, o.url) }).count
+        let unchecked = o.allLinks || external == 0 ? "" : " · \(external) link\(external == 1 ? "" : "s") to other sites not checked (--links all)"
         if checked == 0 {
-            out.append("links    no other \(scope) to check")
+            out.append("links    no other \(scope) to check" + unchecked)
         } else if broken.isEmpty {
-            out.append("links    \(checked) \(scope) checked: none broken")
+            out.append("links    \(checked) \(scope) checked: none broken" + unchecked)
         } else {
-            out.append("links    \(checked) \(scope) checked: \(broken.count) broken")
+            out.append("links    \(checked) \(scope) checked: \(broken.count) broken" + unchecked)
             for b in broken.prefix(40) {
                 let on = b.on.prefix(3).map { shortURL($0, base) }.joined(separator: ", ") + (b.on.count > 3 ? "…" : "")
                 out.append("  \(pad(b.result, 10))\(shortURL(b.url, base))  (on \(on))")
@@ -941,7 +1013,8 @@ func auditText(_ pages: [PageReport], _ o: AuditOptions, broken: [(url: String, 
     return out.joined(separator: "\n")
 }
 
-func auditJSON(_ pages: [PageReport], broken: [(url: String, result: String, on: [String])], checked: Int, browser: String, seconds: Double) -> String {
+func auditJSON(_ pages: [PageReport], broken: [(url: String, result: String, on: [String])], checked: Int, browser: String, seconds: Double,
+               search: String) -> String {
     let list: [[String: Any]] = pages.map { p in
         var info = p.info
         info["links"] = nil
@@ -963,7 +1036,7 @@ func auditJSON(_ pages: [PageReport], broken: [(url: String, result: String, on:
         return d
     }
     let all: [String: Any] = [
-        "browser": browser, "seconds": (seconds * 100).rounded() / 100, "pages": list,
+        "browser": browser, "seconds": (seconds * 100).rounded() / 100, "pages": list, "search": search,
         "links": ["checked": checked, "broken": broken.map { ["url": $0.url, "result": $0.result, "on": $0.on] }],
     ]
     guard let data = try? JSONSerialization.data(withJSONObject: all, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) else { return "{}" }

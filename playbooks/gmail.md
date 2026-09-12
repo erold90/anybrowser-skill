@@ -57,8 +57,11 @@ opens it in a new tab in front; the report says `new tab: "…"`. `raise` or
   shortcut can't be confused with anything.
 - **The recipient becomes a chip.** After `fill "Destinatari diretti"` the report
   says `it shows ""`: the typed address turned into a chip, which accessibility
-  names only by the contact's display name (`Daniele LR`). Don't send on faith —
-  `shot --window` shows the chip under the title bar.
+  names only by the contact's display name (`Daniele LR`). Don't send on faith:
+  `where <address>` finds the chip — `<name> <address>  [PopUpButton]` — and
+  `shot --window` shows it under the title bar (a `shot --element` of the field came back blank).
+- **Counting a list without reading it**: Gmail's own counter is in `text` (`1–4 di 4`);
+  `find row --count` counts rows without printing a subject or a sender.
 - **An empty body field reports its hint as its value** (`Premi / per scrivere
   usando Gmail e Drive`). Don't read that as text already there.
 - **`ui --all` stops at 200 lines, all inbox rows.** The compose panel comes after

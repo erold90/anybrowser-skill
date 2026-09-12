@@ -90,6 +90,8 @@ commands() {
     'click @2' \
     'expect "status: sent"' \
     'links --count' \
+    'find row --count' \
+    'find button "Frame button"' \
     'tabs' 2>&1)
   echo "      $browser: browser commands in $(( $(ms) - start )) ms"
   [ -n "${VERBOSE:-}" ] && grep -E '^\[[0-9]+\]' <<<"$out" | sed 's/^/        /'
@@ -101,6 +103,8 @@ commands() {
   t "$browser: refs click the listed element" "clicked Send  \[Button\]" "$out"
   t "$browser: expect passes, saying where" "ok: \"status: sent\" is on the page in $browser" "$out"
   t "$browser: tabs lists the page"         "anybrowser test — $(re "$URL2")" "$out"
+  t "$browser: rows counted, not read"      "^    3 rows$" "$out"
+  t "$browser: find looks inside frames of other sites" "Frame button  \[Button\]" "$out"
 }
 
 # --- Safari, in a window of its own -----------------------------------------------

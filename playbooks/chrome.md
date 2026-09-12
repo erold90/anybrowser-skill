@@ -55,6 +55,7 @@ own title use `url` or `tabs`.
   user's Chrome, so scripting may reach the wrong one. Use Chromium for throwaway
   profiles.
 - **Remote debugging is not an option on the user's profile**: since Chrome 136
-  `--remote-debugging-port` is ignored on the default data directory. anybrowser
-  doesn't need it.
+  `--remote-debugging-port` is ignored on the default data directory. Driving the
+  user's Chrome doesn't need it; `audit` speaks the DevTools Protocol to a headless
+  Chromium of its own instead (see `audit.md`).
 - **The new tab page** (`chrome://new-tab-page/`) is a page: `find`, `links`, `text` work on it.

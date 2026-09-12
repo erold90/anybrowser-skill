@@ -181,6 +181,17 @@ func reaches(_ p: CGPoint, _ target: AXUIElement) -> Bool {
     return false
 }
 
+/// Is `e` inside an element of that role, a few levels up (text inside a link)?
+func hasAncestor(_ e: AXUIElement, role: String, depth: Int = 3) -> Bool {
+    var cur = e.element(kAXParentAttribute)
+    for _ in 0..<depth {
+        guard let c = cur else { return false }
+        if c.role == role { return true }
+        cur = c.element(kAXParentAttribute)
+    }
+    return false
+}
+
 let inputRoles: Set<String> = ["TextField", "TextArea", "ComboBox", "SearchField", "SecureTextField"]
 let textRoles: Set<String> = ["StaticText", "Heading", "Link", "Button", "Cell", "MenuItem", "TextArea"]
 let chromium = ["com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac", "org.chromium.Chromium",
@@ -373,14 +384,16 @@ func pick(_ needle: String, fields: Bool = false, roles: Set<String>? = nil, nee
     if needPoint, let p = best.point, !reaches(p, best.el) {
         // Off screen or covered: ask for it to be scrolled into view, then look again.
         best.el.perform("AXScrollToVisible")
-        // Pages scroll smoothly: take the position once it has stopped moving, or the
-        // point is checked mid-scroll and a reachable element reads as covered.
-        pause(80)
+        // Pages scroll smoothly, and Chromium starts only after a beat: take the position
+        // once it has held still for ~150 ms, or a reachable element reads as covered.
         var last = frame(best.el)
-        _ = until(1) {
+        var still = 0
+        _ = until(1.2) {
+            pause(50)
             let f = frame(best.el)
-            defer { last = f }
-            return f == last
+            still = f == last ? still + 1 : 0
+            last = f
+            return still >= 3
         }
         if let pos = axPoint(best.el.attr(kAXPositionAttribute)), let size = axSize(best.el.attr(kAXSizeAttribute)) {
             best = Node(el: best.el, name: best.name, role: best.role,
@@ -862,7 +875,7 @@ var windowChangedAt = 0.0
 /// Run an action, let the app react, and report what changed.
 /// `mayNavigate`: the action can load a page (a link, a button, Return) — look a
 /// little longer for a navigation to start, and if one does, wait for the page.
-func acting(mayNavigate: Bool = false, _ body: () throws -> String) throws -> String {
+func acting(mayNavigate: Bool = false, link: Bool = false, _ body: () throws -> String) throws -> String {
     if env("ANYBROWSER_SETTLE", 250) == 0 {                // fire and forget: no report
         let head = try body()
         return head.isEmpty ? "sent" : head
@@ -904,18 +917,31 @@ func acting(mayNavigate: Bool = false, _ body: () throws -> String) throws -> St
     }
     // A page that went away or started loading: wait for the new one and say what it is.
     var loaded: String? = nil
+    var moved: String? = nil                  // the address changed, the document stayed
     if web, let m = mark, m.web != nil, after.pid == before.pid, after.dialog.isEmpty {
         var started = navigationStarted(pid: before.pid, since: m)
         if !started && mayNavigate {
             // Stop looking as soon as the page shows a result of its own: nothing is loading.
+            // A link in a single-page app (GitHub) can take a second or two to move on.
             let pageAnswered = { pageBefore.map { b in pageState().map { $0.text != b.text } ?? false } ?? false }
-            _ = until(0.45) { navigationStarted(pid: before.pid, since: m) || pageAnswered() }
+            _ = until(link ? 2.5 : 0.45) { navigationStarted(pid: before.pid, since: m) || pageAnswered() }
             started = navigationStarted(pid: before.pid, since: m)
+            // A single-page app may draw the new page first and change its address after (GitHub).
+            if !started && link {
+                _ = until(1.5) { navigationStarted(pid: before.pid, since: m) }
+                started = navigationStarted(pid: before.pid, since: m)
+            }
         }
         if started, let app = NSRunningApplication(processIdentifier: before.pid) {
-            let t0 = now()
-            let r = waitLoad(app, from: m, seconds: 12)
-            loaded = loadedReport("loaded", r, t0).replacingOccurrences(of: "; waitload waits longer", with: " — waitload waits longer")
+            if sameDocument(pid: before.pid, since: m) {
+                // Nothing to load — a #fragment, a single-page app — but new content may still be arriving.
+                settleText()
+                moved = "address: \(currentURL(app) ?? "") (same page, changed in place)"
+            } else {
+                let t0 = now()
+                let r = waitLoad(app, from: m, seconds: 12)
+                loaded = loadedReport("loaded", r, t0).replacingOccurrences(of: "; waitload waits longer", with: " — waitload waits longer")
+            }
             after = Snap.take()
         }
     }
@@ -928,14 +954,17 @@ func acting(mayNavigate: Bool = false, _ body: () throws -> String) throws -> St
     func diffPage() {
         // A new page or tab is all new text: the title already says what happened.
         // So is the page coming back from behind a dialog that hid it.
-        guard web, after.pid == before.pid, after.dialog.isEmpty, before.dialog.isEmpty, after.window == before.window else { pageAdded = []; return }
+        guard web, after.pid == before.pid, after.dialog.isEmpty, before.dialog.isEmpty, after.window == before.window || moved != nil else {
+            pageAdded = []
+            return
+        }
         guard let b = pageBefore, let now = pageState() else { pageAdded = []; return }
         pageAdded = pageChanges(b, now)
     }
     if loaded == nil { diffPage() }
     // Silence can just be slowness: an app still launching, a settings pane
     // loading in another process. Listen a little longer before saying so.
-    if loaded == nil && watch.events == 0 && after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web).hasPrefix("→ no reaction") {
+    if loaded == nil && moved == nil && watch.events == 0 && after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web).hasPrefix("→ no reaction") {
         if web {
             watch.settle(first: 400, quiet: 90, max: 900)
             after = Snap.take()
@@ -950,7 +979,7 @@ func acting(mayNavigate: Bool = false, _ body: () throws -> String) throws -> St
             } while now() < deadline && watch.events == 0 && after.changes(since: before, watch: watch).hasPrefix("→ no reaction")
         }
     }
-    let report = after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web, loaded: loaded)
+    let report = after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web, loaded: loaded ?? moved)
     return head.isEmpty ? report : "\(head) \(report)"
 }
 
@@ -1278,8 +1307,12 @@ func fillDate(_ field: Node, _ want: String) throws -> String {
 /// Match an app by what a person or an agent would call it: its localized name
 /// ("Impostazioni di Sistema"), its bundle's file name ("System Settings"), or
 /// its bundle identifier.
+/// What people call browsers: "chrome" is Google Chrome. The tool's own messages say `focus chrome`.
+let appAliases = ["chrome": "Google Chrome", "edge": "Microsoft Edge", "brave": "Brave Browser", "firefox": "Firefox",
+                  "arc": "Arc", "opera": "Opera", "vivaldi": "Vivaldi", "chromium": "Chromium", "canary": "Google Chrome Canary"]
+
 func matches(_ app: NSRunningApplication, _ name: String) -> Bool {
-    let n = name.lowercased()
+    let n = (appAliases[name.lowercased()] ?? name).lowercased()
     return app.localizedName?.lowercased() == n
         || app.bundleURL?.deletingPathExtension().lastPathComponent.lowercased() == n
         || app.bundleIdentifier?.lowercased() == n
@@ -1296,7 +1329,8 @@ func activate(_ name: String) throws {
     } else {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-a", name]
+        p.arguments = ["-a", appAliases[name.lowercased()] ?? name]
+        p.standardError = FileHandle.nullDevice                // our own message says it better
         try p.run()
         p.waitUntilExit()
         if p.terminationStatus != 0 { throw Fail(message: "no application named: \(name)") }
