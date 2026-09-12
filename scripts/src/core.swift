@@ -236,9 +236,12 @@ func walk(_ root: AXUIElement, maxDepth: Int = 40, maxNodes: Int = 8000,
                 let held = str(value(values, 3))
                 if held != name { node.value = String(flat(held).prefix(120)) }
             }
+            // A date or time field is one value ("19:30"), not its hour and minute steppers.
+            if dateRoles.contains(role) { node.value = dateValue(el) ?? "" }
             nodes.append(node)
             if let stop = stop, stop(node) { done = true; return }
         }
+        if dateRoles.contains(role) { return }
         if let kids = value(values, 8) as? [AXUIElement] {
             for k in kids { visit(k, depth + 1, inWeb) }
         }
@@ -305,6 +308,12 @@ func flat(_ s: String) -> String {
     s.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
 }
 
+/// Cut to `n` characters, saying so.
+func clip(_ s: String, _ n: Int) -> String { s.count <= n ? s : String(s.prefix(n - 1)) + "…" }
+
+/// A field's label without the colon it may carry: "Customer name:" → "Customer name".
+func labelText(_ s: String) -> String { flat(s).trimmingCharacters(in: CharacterSet(charactersIn: ": ")) }
+
 func label(_ n: Node) -> String { "\(String(flat(n.name).prefix(100)))  [\(n.role)]" }
 
 func line(_ n: Node) -> String {
@@ -325,7 +334,7 @@ func pick(_ needle: String, fields: Bool = false, roles: Set<String>? = nil, nee
     let deadline = now() + Double(env("ANYBROWSER_WAIT", 2))
     var found: Node? = nil
     let exact = needle.lowercased().trimmingCharacters(in: .whitespaces)
-    let allowed = fields ? inputRoles : roles
+    let allowed = fields ? inputRoles.union(dateRoles) : roles
     // Containers share their names with what they hold (a browser window is titled
     // like its tab): clicking one lands in its middle, on whatever is there.
     let containers: Set<String> = ["Window", "WebArea", "Application", "ScrollArea", "SplitGroup", "Sheet", "TabGroup"]
@@ -350,11 +359,29 @@ func pick(_ needle: String, fields: Bool = false, roles: Set<String>? = nil, nee
         if found != nil || now() >= deadline { break }
         Watch().settle(first: 150, quiet: 40, max: 300)
     }
-    guard var best = found else { throw Fail(message: "no element matching: \(needle)") }
+    guard var best = found else {
+        // Something by that name this command can't use says more than "not found".
+        if !isRef(needle), let other = rank(((try? frontTree()) ?? []).filter { !containers.contains($0.role) }, needle).first,
+           (score(other.name, needle) ?? 9) <= 1 {
+            let why = other.disabled ? "is disabled"
+                : (allowed.map { !$0.contains(other.role) } ?? false) ? "is a \(other.role), not what \(fields ? "fill" : "this command") works on"
+                : "has no position on screen"
+            throw Fail(message: "no usable element matching: \(needle) — \(label(other)) \(why)")
+        }
+        throw Fail(message: "no element matching: \(needle)")
+    }
     if needPoint, let p = best.point, !reaches(p, best.el) {
         // Off screen or covered: ask for it to be scrolled into view, then look again.
         best.el.perform("AXScrollToVisible")
-        pause(200)
+        // Pages scroll smoothly: take the position once it has stopped moving, or the
+        // point is checked mid-scroll and a reachable element reads as covered.
+        pause(80)
+        var last = frame(best.el)
+        _ = until(1) {
+            let f = frame(best.el)
+            defer { last = f }
+            return f == last
+        }
         if let pos = axPoint(best.el.attr(kAXPositionAttribute)), let size = axSize(best.el.attr(kAXSizeAttribute)) {
             best = Node(el: best.el, name: best.name, role: best.role,
                         point: CGPoint(x: (pos.x + size.width / 2).rounded(), y: (pos.y + size.height / 2).rounded()),
@@ -654,6 +681,7 @@ struct Snap {
     var dialog = ""
     var selection = ""
     var tabs: [(title: String, selected: Bool)] = []
+    var host = false
 
     static func take() -> Snap {
         var s = Snap()
@@ -662,6 +690,9 @@ struct Snap {
         guard let app = focusedApp(timeout: 0.4) else { return s }
         s.pid = app.pid
         s.app = appName(app.pid)
+        // The terminal the agent runs in holds the user's conversation and whatever else they
+        // keep there: a report may say it came forward, never what it shows.
+        if isHost(app.pid) { s.host = true; return s }
         // Floating bits with no window role of their own (Chrome's "Translate this
         // page?" bubble) come and go by themselves: they count only while they
         // have the focus — an alert does, a bubble doesn't.
@@ -739,6 +770,10 @@ struct Snap {
     }
 
     func changes(since b: Snap, watch: Watch, pageAdded: [String] = [], web: Bool = false, loaded: String? = nil) -> String {
+        if host {
+            return pid != b.pid ? "→ app: \(b.app) → \(app), the terminal you run in (what it shows isn't reported)"
+                                : "→ in \(app), the terminal you run in (what it shows isn't reported)"
+        }
         var parts: [String] = []
         let title = window.isEmpty ? "(untitled)" : "\"\(window)\""
         let kind = windowKind.isEmpty ? "" : " (\(windowKind))"
@@ -805,11 +840,18 @@ struct Snap {
             }
         }
         if parts.isEmpty {
-            return watch.events > 0 ? "→ the app reacted (\(watch.events) accessibility events), nothing moved in focus"
-                                    : "→ no reaction seen — confirm with read (or shot) before building on it"
+            if watch.events > 0 { return "→ the app reacted (\(watch.events) accessibility events), nothing moved in focus" }
+            return "→ no reaction seen — confirm with "
+                + (web ? "read (or shot)" : "waitfor <text> or read (some apps, like System Settings, change without announcing it)")
+                + " before building on it"
         }
         return "→ " + parts.joined(separator: " · ")
     }
+}
+
+/// A report without its "no reaction seen", for actions that check their own result.
+func withoutDoubt(_ report: String) -> String {
+    report.replacingOccurrences(of: #" → no reaction seen — confirm with .* before building on it"#, with: "", options: .regularExpression)
 }
 
 /// When the last step saw a window appear or change. Browsers ignore clicks on a
@@ -894,9 +936,19 @@ func acting(mayNavigate: Bool = false, _ body: () throws -> String) throws -> St
     // Silence can just be slowness: an app still launching, a settings pane
     // loading in another process. Listen a little longer before saying so.
     if loaded == nil && watch.events == 0 && after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web).hasPrefix("→ no reaction") {
-        watch.settle(first: 400, quiet: 90, max: 900)
-        after = Snap.take()
-        diffPage()
+        if web {
+            watch.settle(first: 400, quiet: 90, max: 900)
+            after = Snap.take()
+            diffPage()
+        } else {
+            // A native app can change without a word to accessibility (System Settings
+            // retitles its window ~1 s after a click): look again before calling it silence.
+            let deadline = now() + 1.5
+            repeat {
+                watch.settle(first: 250, quiet: 90, max: 400)
+                after = Snap.take()
+            } while now() < deadline && watch.events == 0 && after.changes(since: before, watch: watch).hasPrefix("→ no reaction")
+        }
     }
     let report = after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web, loaded: loaded)
     return head.isEmpty ? report : "\(head) \(report)"
@@ -1124,6 +1176,101 @@ func paste(_ text: String) {
         }
         if !items.isEmpty { pb.writeObjects(items) }
     }
+}
+
+// MARK: - Date and time fields
+
+/// <input type=date|time|datetime-local>: Safari's DateTimeArea, Chromium's DateField and TimeField.
+let dateRoles: Set<String> = ["DateTimeArea", "DateField", "TimeField", "DateTimeField"]
+
+/// The field's parts in the order shown (day, month, year · hours, minutes) with the text between them.
+func dateParts(_ field: AXUIElement) -> [(el: AXUIElement?, text: String)] {
+    var out: [(el: AXUIElement?, text: String)] = []
+    func visit(_ e: AXUIElement, _ depth: Int) {
+        for k in e.children {
+            switch k.role {
+            case "Incrementor": out.append((k, ""))
+            case "StaticText": out.append((nil, k.text(kAXValueAttribute)))
+            case "PopUpButton", "Button": break                       // Chromium's picker
+            default: if depth < 4 { visit(k, depth + 1) }
+            }
+        }
+    }
+    visit(field, 0)
+    return out
+}
+
+/// A part's value, which accessibility hands over as a number, not as text.
+func partValue(_ el: AXUIElement) -> String {
+    switch el.attr(kAXValueAttribute) {
+    case let n as NSNumber: return n.stringValue
+    case let s as String: return s.trimmingCharacters(in: .whitespaces)
+    default: return ""
+    }
+}
+
+/// What the field shows: "19:30", "12/09/2026"; nil while it's empty. (An empty part
+/// reads 0 in both browsers, so a field of all zeros counts as empty.)
+func dateValue(_ field: AXUIElement) -> String? {
+    let parts = dateParts(field)
+    let values = parts.compactMap { $0.el.map(partValue) }
+    guard !values.isEmpty, values.contains(where: { Int($0).map { $0 != 0 } ?? !$0.isEmpty }) else { return nil }
+    return parts.map { p in
+        guard let el = p.el else { return p.text }
+        let v = partValue(el)
+        return Int(v).map { $0 < 10 ? "0\($0)" : "\($0)" } ?? v
+    }.joined()
+}
+
+/// The parts of a date or time in the order the field shows them. An ISO date
+/// ("2026-09-12", optionally with "T19:30") is put in this Mac's order; anything else
+/// is taken as written, in the field's own order ("12/09/2026", "19:30", "7:30 pm").
+func datePieces(_ want: String, count: Int) -> [String] {
+    let s = want.trimmingCharacters(in: .whitespaces).lowercased()
+    let numbers = s.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
+    var pieces = numbers
+    if s.range(of: #"^\d{4}-\d{1,2}-\d{1,2}"#, options: .regularExpression) != nil, numbers.count >= 3 {
+        let pattern = DateFormatter.dateFormat(fromTemplate: "yMd", options: 0, locale: .current) ?? "d/M/y"
+        let placed = [("y", numbers[0]), ("M", numbers[1]), ("d", numbers[2])].compactMap { key, value -> (Int, String)? in
+            pattern.range(of: key).map { (pattern.distance(from: pattern.startIndex, to: $0.lowerBound), value) }
+        }
+        if placed.count == 3 { pieces = placed.sorted { $0.0 < $1.0 }.map { $0.1 } + numbers.dropFirst(3) }
+    }
+    // A 12-hour clock has one part more, AM or PM, typed as its letter.
+    if pieces.count == count - 1, let r = s.range(of: #"[ap]\.?m?\.?$"#, options: .regularExpression) {
+        pieces.append(String(s[r].prefix(1)))
+    }
+    // "9" goes as "09": a lone digit leaves the field waiting for a second one.
+    return pieces.map { $0.count == 1 && $0.first!.isNumber ? "0" + $0 : $0 }
+}
+
+/// Type a date or time part by part. No browser takes a value set from outside, and
+/// typed straight through, every digit lands in the first part (Safari: "12092026" → day 26),
+/// so each part gets the focus and its own digits; then the parts are read back.
+func fillDate(_ field: Node, _ want: String) throws -> String {
+    let segments = dateParts(field.el).compactMap { $0.el }
+    guard !segments.isEmpty else { throw Fail(message: "\(label(field)) shows no parts to type into — click it, then keys") }
+    let pieces = datePieces(want, count: segments.count)
+    guard pieces.count == segments.count else {
+        throw Fail(message: "\(label(field)) has \(segments.count) parts (now: \(dateValue(field.el) ?? "empty")) — "
+            + "give that many: \"19:30\", \"2026-09-12\", or as the field shows them", code: 2)
+    }
+    for (segment, piece) in zip(segments, pieces) {
+        let focused = { (segment.attr(kAXFocusedAttribute) as? Bool) == true }
+        AXUIElementSetAttributeValue(segment, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        if !until(0.3, focused), let f = frame(segment) {
+            click(CGPoint(x: f.midX, y: f.midY))
+            _ = until(0.3, focused)
+        }
+        typeKeys(piece)
+        pause(40)
+    }
+    let holds = {
+        zip(segments, pieces).allSatisfy { segment, piece in Int(piece).map { Int(partValue(segment)) == $0 } ?? true }
+    }
+    let ok = until(0.8, holds)
+    let shown = dateValue(field.el) ?? "nothing"
+    return ok ? "filled \(label(field)) with \(shown)" : "filled \(label(field)) — but it shows \(shown)"
 }
 
 // MARK: - Apps, menus, dialogs
@@ -1380,7 +1527,7 @@ func choose(_ popup: Node, _ option: String) throws -> String {
 /// Capture the screen, a window or a region, scaled so one pixel is one point.
 /// A capture that doesn't start at 0,0 says where it starts: add that origin to a
 /// pixel's coordinates to get the point to click.
-func shot(_ name: String, region: CGRect? = nil, display: Int? = nil) throws -> String {
+func shot(_ name: String, region: CGRect? = nil, display: Int? = nil, zoom: Double = 1) throws -> String {
     try requireUnlocked()
     // A plain name goes to ANYBROWSER_SHOTS (default: the temp folder) as <name>.png,
     // replacing the previous shot of that name; an absolute path ending in .png is used as given.
@@ -1422,7 +1569,7 @@ func shot(_ name: String, region: CGRect? = nil, display: Int? = nil) throws -> 
     }
     // Retina captures at 2x: scale to the area's size in points, so one pixel in
     // the image is one point for the mouse.
-    let w = Int(area.width), h = Int(area.height)
+    let w = Int(area.width * zoom), h = Int(area.height * zoom)
     guard w > 0, h > 0, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                               space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
         throw Fail(message: "could not scale the screenshot")
@@ -1435,6 +1582,11 @@ func shot(_ name: String, region: CGRect? = nil, display: Int? = nil) throws -> 
     }
     CGImageDestinationAddImage(dest, scaled, nil)
     CGImageDestinationFinalize(dest)
+    if zoom != 1 {
+        let z = zoom == zoom.rounded() ? "\(Int(zoom))" : "\(zoom)"
+        let add = area.origin == .zero ? "" : ", then add \(Int(area.minX)) \(Int(area.minY))"
+        return "\(out)  (\(w)×\(h), zoom \(z) — divide a pixel's coordinates by \(z)\(add) to get the point to click)"
+    }
     if area.origin == .zero { return out }
     return "\(out)  (\(w)×\(h) starting at \(Int(area.minX)) \(Int(area.minY)) — add that to a pixel to get the point to click)"
 }

@@ -27,7 +27,7 @@ BROWSER  (the browser in front, or the one named with: use <browser>)
   settings [text]          open the browser's settings (Chrome: searched; Safari: that pane)
 
 LOOK
-  shot [name] [--window | --element <name|@ref> | --region X Y W H | --display N]
+  shot [name] [--window | --element <name|@ref> | --region X Y W H | --display N] [--zoom 2]
                            capture, scaled so pixels = points (origin given if not 0,0)
   where <text>             elements matching <text>, best first, with centre points
                            listings number elements (@1, @2…): click @2, fill @1 "x" use exactly that one
@@ -116,24 +116,30 @@ func perform(_ args: [String]) throws -> String {
             if skip > 0 { skip -= 1; continue }
             switch w {
             case "--region": skip = 4
-            case "--display", "--element": skip = 1
+            case "--display", "--element", "--zoom": skip = 1
             default: if !w.hasPrefix("--") && i >= 0 { name = w; break }
             }
             if name != "shot" { break }
         }
+        // --zoom 2: two pixels to a point — a small element's text becomes readable.
+        let zoom = try a.firstIndex(of: "--zoom").map { i -> Double in
+            let z = try number(a[safe: i + 1], "--zoom")
+            guard z >= 1 && z <= 4 else { throw Fail(message: "--zoom takes 1 to 4", code: 2) }
+            return z
+        } ?? 1
         if let i = a.firstIndex(of: "--element") {
             guard let target = a[safe: i + 1] else { throw Fail(message: "shot --element needs a name or a ref", code: 2) }
             try requireTrust("shot --element")
             try keepFront(.act, [target])
             let node = try pick(target, needPoint: false)
             guard let f = frame(node.el), f.width > 0, f.height > 0 else { throw Fail(message: "\(label(node)) has no size on screen") }
-            return try shot(name, region: f.insetBy(dx: -6, dy: -6))
+            return try shot(name, region: f.insetBy(dx: -6, dy: -6), zoom: zoom)
         }
         if !a.contains("--window") { try keepFront(.look) }
         if let i = a.firstIndex(of: "--region") {
             let x = try number(a[safe: i + 1], "x"), y = try number(a[safe: i + 2], "y")
             let w = try number(a[safe: i + 3], "width"), h = try number(a[safe: i + 4], "height")
-            return try shot(name, region: CGRect(x: x, y: y, width: w, height: h))
+            return try shot(name, region: CGRect(x: x, y: y, width: w, height: h), zoom: zoom)
         }
         if a.contains("--window") {
             try requireTrust("shot --window")
@@ -141,12 +147,12 @@ func perform(_ args: [String]) throws -> String {
             guard let win = focusedApp()?.element(kAXFocusedWindowAttribute), let f = frame(win) else {
                 throw Fail(message: "the frontmost app has no window")
             }
-            return try shot(name, region: f)
+            return try shot(name, region: f, zoom: zoom)
         }
         if let i = a.firstIndex(of: "--display") {
-            return try shot(name, display: Int(try number(a[safe: i + 1], "display")))
+            return try shot(name, display: Int(try number(a[safe: i + 1], "display")), zoom: zoom)
         }
-        return try shot(name)
+        return try shot(name, zoom: zoom)
 
     case "windows":
         try requireTrust("windows")
@@ -417,8 +423,10 @@ func perform(_ args: [String]) throws -> String {
         var lines: [String] = []
         for n in source {
             let t: String
-            if let v = n.value { t = "\(flat(n.name)): \"\(v)\"" }            // Name: "Grace Hopper"
-            else if let on = n.on { t = "\(flat(n.name)): \(on ? "on" : "off")" }
+            // A label just above the field it names is said once, with the field.
+            if n.value != nil || n.on != nil, let last = lines.last, labelText(last) == labelText(n.name) { lines.removeLast() }
+            if let v = n.value { t = "\(labelText(n.name)): \"\(v)\"" }            // Name: "Grace Hopper"
+            else if let on = n.on { t = "\(labelText(n.name)): \(on ? "on" : "off")" }
             else if n.role == "TextArea" && n.value == nil { t = "document: \"\(String(flat(n.name).prefix(400)))\"" }   // a text area with no label is the document itself
             else if textRoles.contains(n.role) || inputRoles.contains(n.role) { t = flat(n.name) }
             else { continue }
@@ -508,8 +516,7 @@ func perform(_ args: [String]) throws -> String {
         try keepFront(.act, [a[0]])
         let popup = try pick(a[0], roles: ["PopUpButton", "ComboBox", "MenuButton"], needPoint: false)
         // choose() reads the value back, so silence around it isn't doubt.
-        return try acting { try choose(popup, a[1]) }
-            .replacingOccurrences(of: " → no reaction seen — confirm with read (or shot) before building on it", with: "")
+        return try withoutDoubt(acting { try choose(popup, a[1]) })
             .replacingOccurrences(of: " → the app reacted (1 accessibility events), nothing moved in focus", with: "")
 
     case "waitgone":
@@ -532,6 +539,10 @@ func perform(_ args: [String]) throws -> String {
         try keepFront(.act, [a[0]])
         let field = try pick(a[0], fields: true)
         let want = a[1]
+        if dateRoles.contains(field.role) {
+            // fillDate reads the parts back, so silence around it isn't doubt.
+            return try withoutDoubt(acting { try fillDate(field, want) })
+        }
         // Letters and digits only: a field may format what it gets ("333 1234").
         let norm = { (s: String) in s.lowercased().filter { $0.isLetter || $0.isNumber } }
         // Some pages swap the field for another on focus (Wikipedia's search): the
@@ -598,9 +609,13 @@ func perform(_ args: [String]) throws -> String {
 
     case "focus":
         guard let app = a.first else { throw Fail(message: "focus needs an app name", code: 2) }
+        // Said, so an agent knows whether the app is its own to quit afterwards.
+        let wasRunning = runningApp(app) != nil
         try activate(app)
-        let hasWindow = focusedApp()?.element(kAXFocusedWindowAttribute) != nil
-        return hasWindow ? "focused \(app)" : "focused \(app) — it has no window open"
+        // A window can follow its app by a second (System Settings).
+        let hasWindow = until(wasRunning ? 1 : 3) { focusedApp(timeout: 0.5)?.element(kAXFocusedWindowAttribute) != nil }
+        let head = wasRunning ? "focused \(app)" : "launched \(app) (it wasn't running)"
+        return hasWindow ? head : "\(head) — it has no window open"
 
     case "open":
         guard let url = a.first, url.hasPrefix("http://") || url.hasPrefix("https://") else {
@@ -639,7 +654,7 @@ func perform(_ args: [String]) throws -> String {
         guard target.reachable else { throw Fail(message: "\(label(target)) is covered or off screen — nothing to hover") }
         let report = try acting { glide(to: target.point!); return "hovering over \(label(target))" }
         // Most things don't react to a pointer resting on them; that isn't a failure.
-        return report.replacingOccurrences(of: " → no reaction seen — confirm with read (or shot) before building on it", with: "")
+        return withoutDoubt(report)
 
     case "move":
         try requireTrust("move")
@@ -718,7 +733,7 @@ func perform(_ args: [String]) throws -> String {
             }
             if inWindow { rememberFrontWindow(browser) }
             guard url != nil else { return "opened a new \(inWindow ? "window" : "tab") in \(browserName(browser))" }
-            return loadedReport(inWindow ? "new window:" : "new tab:", waitLoad(browser, from: nil, seconds: 20), started)
+            return loadedReport("new \(inWindow ? "window" : "tab") in \(browserName(browser)):", waitLoad(browser, from: nil, seconds: 20), started)
         }
         if sub == "close" {
             let browser = try targetBrowser()
@@ -797,7 +812,7 @@ func perform(_ args: [String]) throws -> String {
         }
         rememberFrontWindow(browser)
         guard url != nil else { return "opened a private window in \(browserName(browser))" }
-        return loadedReport("private window:", waitLoad(browser, from: nil, seconds: 20), started)
+        return loadedReport("private window in \(browserName(browser)):", waitLoad(browser, from: nil, seconds: 20), started)
 
     case "go":
         guard let raw = a.first else { throw Fail(message: "go needs an address: go example.com", code: 2) }
@@ -855,7 +870,8 @@ func perform(_ args: [String]) throws -> String {
         let filter = a.filter { !$0.hasPrefix("--") }.joined(separator: " ").lowercased()
         var nodes: [Node] = []
         var urls: [String] = []
-        var seen = Set<String>()
+        var times: [Int] = []                  // how often each listed link is on the page
+        var seen: [String: Int] = [:]
         var total = 0
         for el in webSearch(web, "AXLinkSearchKey", limit: 2000) {
             let url = axURL(el)
@@ -864,9 +880,12 @@ func perform(_ args: [String]) throws -> String {
             let name = flat(node.name)
             guard filter.isEmpty || (!urlOnly && name.lowercased().contains(filter)) || url.lowercased().contains(filter) else { continue }
             total += 1
-            guard seen.insert(name + "\u{0}" + url).inserted else { continue }
+            let key = name + "\u{0}" + url
+            if let j = seen[key] { times[j] += 1; continue }
+            seen[key] = nodes.count
             nodes.append(node)
             urls.append(url)
+            times.append(1)
         }
         let summary = "\(total) link\(total == 1 ? "" : "s")" + (total != nodes.count ? " (\(nodes.count) different)" : "")
             + (filter.isEmpty ? "" : " with \"\(filter)\" in their \(urlOnly ? "address" : "text or address")")
@@ -874,8 +893,9 @@ func perform(_ args: [String]) throws -> String {
         var i = 0
         let lines = numbered(nodes, limit: 150) { node in
             defer { i += 1 }
-            var line = "\(node.name.isEmpty ? "(no text)" : String(flat(node.name).prefix(80))) — \(String(urls[i].prefix(120)))"
+            var line = "\(node.name.isEmpty ? "(no text)" : clip(flat(node.name), 80)) — \(clip(urls[i], 120))"
             if let p = node.point { line += "  ->  \(Int(p.x)) \(Int(p.y))" + (onScreen(p) ? "" : "  (offscreen)") }
+            if times[i] > 1 { line += "  (×\(times[i]))" }
             return line
         }
         guard !lines.isEmpty else { throw Fail(message: filter.isEmpty ? "no links on this page" : "no link matching: \(a.joined(separator: " "))") }
@@ -902,7 +922,10 @@ func perform(_ args: [String]) throws -> String {
                 ?? Node(el: el, name: "", role: el.role, point: frame(el).map { CGPoint(x: $0.midX.rounded(), y: $0.midY.rounded()) },
                         disabled: false, inWeb: true)
             if node.name.isEmpty, key == "AXTableSearchKey" {
-                node = Node(el: el, name: "table of \((el.attr(kAXRowsAttribute) as? [AXUIElement])?.count ?? 0) rows", role: node.role,
+                // Which table is which: its size and how it starts.
+                let rows = (el.attr(kAXRowsAttribute) as? [AXUIElement]) ?? []
+                let start = rows.first.map { r in r.children.prefix(3).map { cellText($0) }.filter { !$0.isEmpty }.joined(separator: " | ") } ?? ""
+                node = Node(el: el, name: "table of \(rows.count) rows" + (start.isEmpty ? "" : ": \(clip(start, 70))"), role: node.role,
                             point: node.point, disabled: false, inWeb: true)
             }
             nodes.append(node)
@@ -922,17 +945,9 @@ func perform(_ args: [String]) throws -> String {
         let n = a.isEmpty ? 1 : Int(try number(a[0], "table number"))
         let tables = webSearch(web, "AXTableSearchKey", limit: 50)
         guard let table = tables[safe: n - 1] else { throw Fail(message: "this page has \(tables.count) table\(tables.count == 1 ? "" : "s") — no table \(n)") }
-        func cellText(_ e: AXUIElement, _ depth: Int) -> String {
-            var parts: [String] = []
-            for attr in [kAXTitleAttribute, kAXValueAttribute, kAXDescriptionAttribute] {
-                let t = flat(e.text(attr)); if !t.isEmpty { parts.append(t); break }
-            }
-            if parts.isEmpty, depth < 4 { parts = e.children.map { cellText($0, depth + 1) }.filter { !$0.isEmpty } }
-            return parts.joined(separator: " ")
-        }
         let rows = (table.attr(kAXRowsAttribute) as? [AXUIElement]) ?? []
         guard !rows.isEmpty else { throw Fail(message: "table \(n) exposes no rows") }
-        let out = rows.prefix(200).map { row in row.children.map { String(cellText($0, 0).prefix(60)) }.joined(separator: " | ") }
+        let out = rows.prefix(200).map { row in row.children.map { clip(cellText($0), 100) }.joined(separator: " | ") }
         return (out + (rows.count > 200 ? ["… \(rows.count - 200) more rows"] : [])).joined(separator: "\n")
 
     case "js":
@@ -1090,6 +1105,16 @@ func perform(_ args: [String]) throws -> String {
     default:
         throw Fail(message: "unknown command: \(cmd)\n\n\(usage)")
     }
+}
+
+/// A table cell's text: its own title or value, else what its children say.
+func cellText(_ e: AXUIElement, _ depth: Int = 0) -> String {
+    var parts: [String] = []
+    for attr in [kAXTitleAttribute, kAXValueAttribute, kAXDescriptionAttribute] {
+        let t = flat(e.text(attr)); if !t.isEmpty { parts.append(t); break }
+    }
+    if parts.isEmpty, depth < 4 { parts = e.children.map { cellText($0, depth + 1) }.filter { !$0.isEmpty } }
+    return parts.joined(separator: " ")
 }
 
 func dedupe(_ lines: [String]) -> [String] {

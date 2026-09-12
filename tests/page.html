@@ -6,6 +6,9 @@
 <input id="email" placeholder="Email" aria-label="Email">
 <p id="inputs">real inputs: 0 · synthetic: 0</p>
 <label for="plan">Plan</label><select id="plan"><option>Free</option><option>Pro</option><option>Team</option></select>
+<label for="when">Delivery time</label><input type="time" id="when">
+<label for="day">Delivery date</label><input type="date" id="day">
+<p id="picked">picked: time=- date=-</p>
 <button id="alert">Show alert</button>
 <label for="file">Upload file</label><input type="file" id="file">
 <button id="draft" disabled>Send draft</button>
@@ -14,6 +17,8 @@
 <p id="clicks">real clicks: 0 · synthetic: 0</p>
 <p id="time">last mousedown: 0</p>
 <p id="status">status: ready</p>
+<div style="height:1600px"></div>
+<button id="far">Far button</button>
 <script>
 // The page keeps its own record: whether events came from the OS (isTrusted)
 // or from script, and when the last mousedown arrived, in epoch milliseconds.
@@ -26,4 +31,6 @@ $('alert').onclick = () => { alert('Test alert'); $('status').textContent = 'sta
 $('file').onchange = e => { $('status').textContent = 'status: file ' + (e.target.files[0] || {}).name; };
 $('send').onclick = () => { $('status').textContent = `status: sent name=${$('name').value} email=${$('email').value} plan=${$('plan').value} file=${($('file').files[0] || {}).name || '-'}`; };
 $('target').onclick = () => { $('status').textContent = 'status: target hit'; };
+$('far').onclick = () => { $('status').textContent = 'status: far hit'; };
+for (const id of ['when', 'day']) $(id).addEventListener('input', () => { $('picked').textContent = `picked: time=${$('when').value || '-'} date=${$('day').value || '-'}`; });
 </script></body></html>

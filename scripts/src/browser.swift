@@ -516,6 +516,8 @@ func waitLoad(_ browser: NSRunningApplication, from mark: PageMark?, scripted: S
             if let web = webArea(in: win) {
                 url = axURL(web)
                 title = pageTitle(web, win)
+                // A page without a <title> is named by its address, and the window keeps the old one a moment.
+                if let old = mark?.url ?? scripted, title == old, url != old { title = url }
                 let loaded = (web.attr("AXLoaded") as? Bool) ?? true
                 let busy = (web.attr("AXElementBusy") as? Bool) ?? false
                 if !left, let m = mark {

@@ -24,9 +24,9 @@ binary, ~30 s). Before the first task: `scripts/anybrowser.sh check`.
 | Back, forward, reload | `back` · `forward` · `reload` — each waits for the page | 0.1–0.3 s |
 | Read a page | `text` — the whole page in one call, line by line; `text --main` — just the article, without menus and sidebars; `--max N` characters (default 12000) | 20–150 ms |
 | Read what's visible, with field values | `read` (`--all`: off-screen too, up to 400 lines — for long pages use `text`) | |
-| Links and where they go | `links` · `links invoice` — matches text or address, any case (`--url`: address only); identical links listed once; the last line counts them, `--count` prints only that | |
+| Links and where they go | `links` · `links invoice` — matches text or address, any case (`--url`: address only); identical links listed once, marked `(×3)`; the last line counts them, `--count` prints only that | |
 | Find an element | `find button Send` · `find field` · `find heading` · `where Send` | 5–150 ms |
-| A table | `find table` · `table 2` | |
+| A table | `find table` (each with its size and first cells) · `table 2` (a long cell ends in `…`) | |
 | Act | `click Send` · `fill Email "a@b.c"` · `select Plan Pro` · `click @3` | 0.2–0.6 s |
 | Wait / check | `waitfor "Order placed" 15` · `waitgone Loading` · `expect "Saved"` · `waitload` | |
 | History | `history invoice --days 7` · `--count` for a number only | 50 ms (Chrome) |
@@ -65,7 +65,7 @@ that already says what changed.
 | `app: Safari → Finder` | another app came to the front |
 | `selected: "report.pdf"` · `changed: "Sent" [StaticText]` · `menu open` | native apps |
 | `the app reacted (…), nothing moved in focus` | something changed the report can't name: `text` or `read` if it matters |
-| `no reaction seen — confirm with read (or shot)` | the click may have missed |
+| `no reaction seen — confirm with read (or shot)` | the click may have missed — or, in a native app like System Settings, changed a pane without announcing it: `waitfor` what should appear, then `read` |
 
 Exit codes: `0` done, `1` failed or not found (the message says which), `2` bad arguments.
 
@@ -109,6 +109,7 @@ Lookups by name wait up to 2 s for the element, so no `sleep` between steps.
 and `click @2`, `fill @1 "…"`, `select @4 Pro`, `shot x --element @3` use exactly
 that element, even when several share a name. A ref is found again by its name,
 role and position, so it survives the page re-rendering; after a navigation, list again.
+A ref points into the latest listing — inside one `do` too, so name elements there when a step lists twice.
 
 ## Names
 
@@ -127,6 +128,10 @@ use it when the user is working on the same Mac.
 
 - **Forms.** `fill` clicks the field, selects its content and pastes: React and
   similar fields accept it. `select` works on `<select>` in Safari and Chrome.
+- **Date and time fields**: `fill "Delivery time" "19:30"`, `fill "Date" "2026-09-12"` — an ISO
+  date goes in this Mac's order, anything else as the field shows it (`12/09/2026`). Each part
+  is typed on its own and read back (`filled Date [DateTimeArea] with 12/09/2026`); `read`
+  shows the field as one value.
 - **Alerts** are reported as `dialog:`; answer with `key return` or `click <button>`.
 - **File pickers.** `click` the page's upload control, then `upload ~/file.pdf` —
   it checks the system dialog is really open before typing a path.
@@ -161,9 +166,10 @@ Read the one that fits before starting — names, recipes and traps already met:
 
 The same commands drive any app: `menu TextEdit Format Font "Show Fonts"`,
 `click "Save"`, `menus <app>` (a menu's items, `▸` = submenu), `focus <app>`
-(launches it), `quit <app>`, `windows` · `raise "Invoice"` ·
+(launches it and says so — quit only apps you launched), `quit <app>`, `windows` · `raise "Invoice"` ·
 `window move|resize|maximize|minimize|restore|fullscreen|close`, `shot --window`
-for what the tree can't see (a pixel in the image is the point to click).
+for what the tree can't see (a pixel in the image is the point to click); `--zoom 2` makes
+small text readable (then halve a pixel's coordinates).
 
 - **Closing without saving**: the sheet's discard button is `Don't Save` for an
   edited file but `Delete` for a never-saved document. Pressing it is only right
@@ -195,7 +201,7 @@ BROWSER tabs · tab <n|text> · tab new [address] [--window] · tab close [n|tex
         text [--max N] · links [text] · find <kind> [text] · table [n] · js "<code>" · source [--save file]
         history [text] [--days N] [--limit N] · bookmarks [text] · bookmark ["title"] · readinglist [address]
         downloads [n] · settings [text]
-LOOK    shot [name] [--window|--element <name|@ref>|--region X Y W H|--display N] · windows
+LOOK    shot [name] [--window|--element <name|@ref>|--region X Y W H|--display N] [--zoom 2] · windows
         where <text> · waitfor|waitgone <text> [secs] · expect <text> [secs] · read [--all] · ui [--all] [--page]
         apps · menus <app> [<menu>...] · pos
 ACT     click|dclick|rclick X Y|<name>|@ref · press <name> · fill <field> "text" · select <menu> <option>

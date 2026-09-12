@@ -47,6 +47,8 @@ flow() {
     'fill Name "Ada Lovelace"' \
     'fill Email "ada@example.com"' \
     'select Plan Pro' \
+    'fill "Delivery time" "19:30"' \
+    'fill "Delivery date" "2026-09-12"' \
     'click "Show alert"' \
     'key return' \
     'click "Upload file"' \
@@ -57,12 +59,18 @@ flow() {
   [ -n "${VERBOSE:-}" ] && grep -E '^\[[0-9]+\]' <<<"$out" | sed 's/^/        /'
   t "$browser: flow completes"              "status: sent name=Ada Lovelace email=ada@example.com plan=Pro file=logo.txt" "$out"
   t "$browser: typing is real input"        "real inputs: [1-9][0-9]* · synthetic: 0" "$out"
+  t "$browser: date and time fields take their parts" "picked: time=19:30 date=2026-09-12" "$out"
+  t "$browser: fill says what a date field shows"  "filled Delivery date .* with 12/09/2026" "$out"
   t "$browser: clicks are real clicks"      "real clicks: [1-9][0-9]* · synthetic: 0" "$out"
 
   start=$(ms)
   "$M" click Target >/dev/null 2>&1
   page=$("$M" read 2>/dev/null | grep -Eo 'last mousedown: [0-9]+' | grep -Eo '[0-9]+$')
   echo "      $browser: command → mousedown in the page: $(( page - start )) ms (click by name, one process)"
+
+  # Below the fold: scrolled into view (smoothly), then clicked for real — not pressed as "covered".
+  out=$("$M" click "Far button" 2>&1)
+  t "$browser: a button below the fold is scrolled to and clicked" "clicked Far button" "$out"
 }
 
 commands() {
