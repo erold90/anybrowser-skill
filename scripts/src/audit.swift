@@ -224,6 +224,17 @@ let vitalsScript = #"""
 })();
 """#
 
+/// Resolves once running animations with an end have ended (infinite ones, like a pulsing dot, don't count).
+let settleScript = #"""
+new Promise(r => setTimeout(r, 300)).then(() => Promise.race([
+  Promise.all(document.getAnimations().filter(a => {
+    const t = a.effect && a.effect.getComputedTiming();
+    return t && isFinite(t.endTime) && a.playState === 'running';
+  }).map(a => a.finished.catch(() => null))),
+  new Promise(r => setTimeout(r, 3000))
+])).then(() => true)
+"""#
+
 /// Read once the page has loaded: what search engines, screen readers and a person check first.
 let pageScript = #"""
 (() => {
@@ -246,7 +257,7 @@ let pageScript = #"""
     images: all('img').length,
     noAlt: all('img:not([alt])').map(i => i.currentSrc || i.src).slice(0, 20),
     unlabeled: all('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=reset]):not([type=image]), select, textarea')
-      .filter(e => !labelled(e)).map(e => e.name || e.id || e.type).slice(0, 20),
+      .filter(e => !labelled(e) && (!e.checkVisibility || e.checkVisibility())).map(e => e.name || e.id || e.type).slice(0, 20),
     namelessButtons: all('button, [role=button]').filter(b => !b.textContent.trim() && !b.getAttribute('aria-label') && !b.title).length,
     duplicateIds: [...new Set(ids.filter((id, i) => id && ids.indexOf(id) !== i))].slice(0, 10),
     links: [...new Set(all('a[href]').map(a => a.href).filter(h => /^https?:/i.test(h)).map(h => h.split('#')[0]))],
@@ -331,6 +342,9 @@ func auditPage(_ cdp: CDP, session: String, url: String, wait: Double) -> PageRe
         if loadedAt == nil {
             report.warnings.append(Finding(kind: "load", text: "no load event within \(Int(wait)) s — audit --wait \(Int(wait) * 2) waits longer"))
         }
+        // Text still fading in measures as nearly invisible (a contrast of 1.00): let the page's
+        // timed entrances start and its finite animations end first, at most 3 s.
+        tryCDP(cdp, "Runtime.evaluate", ["expression": settleScript, "awaitPromise": true, "returnByValue": true], session: session, timeout: 5)
         // Checks Chrome runs only when asked: text contrast, forms.
         tryCDP(cdp, "Audits.checkContrast", ["reportAAA": false], session: session, timeout: 5)
         if let forms = try? cdp.send("Audits.checkFormsIssues", session: session, timeout: 5) {
@@ -352,12 +366,50 @@ func auditPage(_ cdp: CDP, session: String, url: String, wait: Double) -> PageRe
         debug("audit: metrics taken")
     }
     report.seconds = now() - started
-    collect(cdp.events(from: mark).filter { $0.session == session }, extraIssues, into: &report)
+    // Chrome measures text nobody can see too (a hidden screen, a panel at opacity 0): those don't count.
+    let hidden = report.failure == nil ? invisibleContrastNodes(cdp, session: session, from: mark) : []
+    collect(cdp.events(from: mark).filter { $0.session == session }, extraIssues, hidden: hidden, into: &report)
     if report.failure == nil,
        let c = try? cdp.send("Network.getCookies", ["urls": [report.address]], session: session) {
         report.cookies = c["cookies"] as? [[String: Any]] ?? []
     }
     return report
+}
+
+/// The low-contrast elements that aren't visible at all — hidden, or at opacity 0 themselves or
+/// through an ancestor. Chrome flags them with a ratio near 1.0 (a portfolio's second screen did).
+func invisibleContrastNodes(_ cdp: CDP, session: String, from mark: Int) -> Set<Int> {
+    let ids = cdp.events(from: mark).filter { $0.session == session && $0.method == "Audits.issueAdded" }
+        .compactMap { ($0.params.dict("issue").dict("details").dict("lowTextContrastIssueDetails")["violatingNodeId"] as? NSNumber)?.intValue }
+    guard !ids.isEmpty else { return [] }
+    tryCDP(cdp, "DOM.getDocument", ["depth": 0], session: session)
+    // Hidden, or scrolled out of a scrolling panel: Chrome then measures it against whatever lies
+    // under that spot (the portfolio's skills, below the fold of their panel, read 2.54 in both themes).
+    let visible = """
+        function(){
+          const e = this.nodeType === 1 ? this : this.parentElement;
+          if (!e) return true;
+          if (e.checkVisibility && !e.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})) return false;
+          const r = e.getBoundingClientRect();
+          for (let a = e.parentElement; a && a !== document.body && a !== document.documentElement; a = a.parentElement) {
+            const s = getComputedStyle(a);
+            if (/(auto|scroll|hidden|clip)/.test(s.overflowY + ' ' + s.overflowX)) {
+              const b = a.getBoundingClientRect();
+              if (r.bottom <= b.top || r.top >= b.bottom || r.right <= b.left || r.left >= b.right) return false;
+            }
+          }
+          return true;
+        }
+        """
+    var hidden = Set<Int>()
+    for id in Set(ids).prefix(200) {
+        guard let object = tryCDP(cdp, "DOM.resolveNode", ["backendNodeId": id], session: session)?.dict("object").str("objectId"),
+              !object.isEmpty,
+              let answer = tryCDP(cdp, "Runtime.callFunctionOn", ["objectId": object, "functionDeclaration": visible, "returnByValue": true],
+                                  session: session) else { continue }
+        if answer.dict("result")["value"] as? Bool == false { hidden.insert(id) }
+    }
+    return hidden
 }
 
 func remoteText(_ o: [String: Any]) -> String {
@@ -413,7 +465,7 @@ func issueFinding(_ issue: [String: Any], base: String) -> (Finding, Bool) {
 
 let textTypes: Set<String> = ["Document", "Script", "Stylesheet", "XHR", "Fetch"]
 
-func collect(_ events: [CDPEvent], _ extraIssues: [[String: Any]], into r: inout PageReport) {
+func collect(_ events: [CDPEvent], _ extraIssues: [[String: Any]], hidden: Set<Int> = [], into r: inout PageReport) {
     var byId: [String: NetRequest] = [:]
     var order: [NetRequest] = []
     var issues = extraIssues
@@ -505,7 +557,8 @@ func collect(_ events: [CDPEvent], _ extraIssues: [[String: Any]], into r: inout
     }
     var seenIssues = Set<String>()
     // Low contrast comes once per element: one line, the worst first, says it better.
-    let contrast = issues.map { $0.dict("details").dict("lowTextContrastIssueDetails") }.filter { !$0.isEmpty }
+    let contrast = issues.map { $0.dict("details").dict("lowTextContrastIssueDetails") }
+        .filter { !$0.isEmpty && !hidden.contains(Int($0.num("violatingNodeId"))) }
     if !contrast.isEmpty {
         let worst = contrast.sorted { $0.num("contrastRatio") < $1.num("contrastRatio") }
         var selectors: [String] = []
@@ -568,7 +621,7 @@ func pad(_ s: String, _ n: Int) -> String { s.count >= n ? s + " " : s + String(
 struct AuditOptions {
     var url = ""
     var wait = 15.0
-    var mobile = false, slow = false, json = false, profile = false
+    var mobile = false, slow = false, json = false, profile = false, dark = false
     var links = false, allLinks = false
     var crawl = 1
     var shot: String? = nil
@@ -583,6 +636,7 @@ func auditCommand(_ a: [String]) throws -> String {
         switch w {
         case "--mobile": o.mobile = true
         case "--slow": o.slow = true
+        case "--dark": o.dark = true
         case "--json": o.json = true
         case "--profile": o.profile = true
         case "--links":
@@ -603,7 +657,7 @@ func auditCommand(_ a: [String]) throws -> String {
             i += 1
         default:
             if w.hasPrefix("--") {
-                throw Fail(message: "unknown audit option: \(w) — --mobile --slow --links [all] --crawl N --wait S --shot file.png --json --profile", code: 2)
+                throw Fail(message: "unknown audit option: \(w) — --mobile --slow --dark --links [all] --crawl N --wait S --shot file.png --json --profile", code: 2)
             }
             o.url = try normalizeURL(w)
         }
@@ -671,6 +725,10 @@ func runAudit(_ o: AuditOptions, note: String) throws -> String {
         tryCDP(cdp, "Emulation.setTouchEmulationEnabled", ["enabled": true], session: session)
     }
     tryCDP(cdp, "Emulation.setUserAgentOverride", ["userAgent": agent], session: session)
+    if o.dark {
+        // A site with a dark theme has a second set of colours to check.
+        tryCDP(cdp, "Emulation.setEmulatedMedia", ["features": [["name": "prefers-color-scheme", "value": "dark"]]], session: session)
+    }
     if o.slow {
         // Lighthouse's mobile preset: slow 4G and a CPU four times slower. Chrome 146 marks the
         // old network command deprecated: rules first, the old command where rules don't exist.
@@ -764,6 +822,10 @@ func searchLine(_ address: String, agent: String) -> String {
     } else {
         parts.append(named.isEmpty ? "no sitemap (none named in robots.txt, none at /sitemap.xml)" : "the sitemap robots.txt names doesn't answer: \(map)")
     }
+    // An address that doesn't exist must say so: a 200 with the home page is indexed as a copy of it
+    // (Cloudflare Pages does that for every site without a 404.html).
+    let missing = get(origin + "/anybrowser-no-such-page-\(Int(now()))")
+    if missing.status == 200 { parts.append("missing pages answer 200 instead of 404 (a soft 404: add a 404 page)") }
     return parts.joined(separator: " · ")
 }
 
@@ -947,7 +1009,8 @@ func auditText(_ pages: [PageReport], _ o: AuditOptions, broken: [(url: String, 
                browser: String, seconds: Double, note: String, search: String) -> String {
     guard let first = pages.first else { return "audit \(o.url): nothing audited" }
     var out: [String] = []
-    let how = "\(browser) headless" + (o.mobile ? ", phone" : "") + (o.slow ? ", slow 4G + CPU ×4" : "") + (o.profile ? ", audit profile" : "")
+    let how = "\(browser) headless" + (o.mobile ? ", phone" : "") + (o.slow ? ", slow 4G + CPU ×4" : "") + (o.dark ? ", dark theme" : "")
+        + (o.profile ? ", audit profile" : "")
     let base = first.address
     if pages.count == 1 {
         if let failure = first.failure { return "audit \(first.url) — the page didn't load: \(failure)\(note)" }

@@ -27,7 +27,7 @@ BROWSER  (the browser in front, or the one named with: use <browser>)
   settings [text]          open the browser's settings (Chrome: searched; Safari: that pane)
 
 AUDIT  (a headless Chrome of its own — nothing on screen, nothing changed in your browser)
-  audit [address] [--links [all]] [--crawl N] [--mobile] [--slow] [--shot file.png] [--json] [--profile]
+  audit [address] [--links [all]] [--crawl N] [--mobile] [--slow] [--dark] [--shot file.png] [--json] [--profile]
                            console errors, failed requests, Chrome's Issues, speed, weight, page and security checks
   audit signin <address>   a window with the audit profile, for the user to sign in; then audit --profile
 

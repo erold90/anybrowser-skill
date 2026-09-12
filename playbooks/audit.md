@@ -53,6 +53,7 @@ hardening (headers, cookies). Quote the finding lines as they are; they're alrea
 | `the viewport blocks zooming (width=device-width, user-scalable=no)` | people with poor sight can't pinch to zoom | drop `user-scalable=no` and `maximum-scale=1` |
 | `search   no robots.txt · no sitemap` | search engines get no map of the site | add `/robots.txt` naming `Sitemap: https://site/sitemap.xml`, and the sitemap itself |
 | `search   robots.txt BLOCKS every search engine from every page` | a `Disallow: /` left from development | remove it, unless the site really must stay out of search |
+| `search   … missing pages answer 200 instead of 404 (a soft 404: add a 404 page)` | Cloudflare Pages without a `404.html` answers every address with the home page (found on all three of the user's sites) | add a short `404.html` with a link home |
 | `issue GenericIssue: FormLabelForNameError` and similar | form fields Chrome can't tie to a label | a `<label for>` or `aria-label` |
 | `LCP 3.2 s (slow)` | the largest image or text block comes late | preload the hero image, serve it smaller, avoid render-blocking CSS and JS |
 | `CLS 0.16 (high)` | things move while loading | give images, embeds and ads a width and height (or `aspect-ratio`) |
@@ -62,7 +63,45 @@ hardening (headers, cookies). Quote the finding lines as they are; they're alrea
 | `tells the world server: nginx/1.18.0` | a version helps attackers pick exploits | `server_tokens off` (nginx), hide `x-powered-by` |
 | `cookies … readable by scripts` | a session cookie without HttpOnly | set HttpOnly (and Secure, SameSite) where the server sets it |
 
+## Fixing a site, verified on danielelore.com, codename.cc and salentofood.pages.dev (12/09/2026)
+
+1. **Keep a copy first.** None of the three sites was a git repository.
+2. **Compare the live page with the local source before editing** (`curl` against the file). On
+   danielelore.com the only difference was Cloudflare's email obfuscation, which rewrites
+   `mailto:` links on the fly.
+3. **Serve the fix locally the way the host does.** `wrangler pages dev <dir> --port N` applies
+   `_headers` and `404.html`, and runs the Functions. Audit it there.
+   - Start one `wrangler pages dev` at a time, since two collide on the inspector port 9229.
+   - `upgrade-insecure-requests` in the CSP did no harm on `http://127.0.0.1`.
+4. **Deploy to a preview branch** (`--branch anteprima`), audit `https://anteprima.<project>.pages.dev`,
+   then deploy production. Production reuses the uploaded files ("0 files uploaded").
+5. **Audit the real domain again.** Cloudflare injects scripts there that the preview doesn't have:
+   - email obfuscation, from `/cdn-cgi` (same origin);
+   - Web Analytics (`static.cloudflareinsights.com`, beacon to `cloudflareinsights.com`).
+
+   A CSP that forgets them breaks the page; with them listed, the audit shows `errors 0`.
+
+Traps met along the way:
+
+- **`wrangler pages deploy <dir>` publishes every file in the folder.** Design notes and a zip sat
+  next to codename.cc's pages. Deploy from a copy that holds only the site's files.
+- **In `_headers`, `/` matches only the home page.** Headers for every address go under `/*`. The
+  same header under both is sent twice.
+- **Low contrast:**
+  - Compute the passing colour; don't guess it. Darken the same hue in OKLCH until the ratio
+    reaches 4.5 on the lightest background it sits on (a white card over the page counts).
+  - Keep a separate, darker token for coloured *text* than for filled buttons.
+- **CLS from web fonts:** a fallback `@font-face` with `size-adjust`, `ascent-override` and
+  `descent-override` measured from the font files. Measure with fontTools, weighting average glyph
+  width by letter frequency. It took codename.cc from 0.16 to 0.
+- **CLS from content drawn by script:** reserve the space the text will take (`min-height`), and
+  keep an empty footer hidden until it's filled (`:empty { display: none }`).
+
 ## Limits, and how to get past them
+
+- **Contrast is measured on what's visible.** Hidden elements, and text scrolled out of a scrolling
+  panel, are left out, because Chrome measures them against whatever lies under that spot. A site
+  with a dark theme has colours of its own: audit it again with `--dark`.
 
 - **Not signed in by default.** The audit browser is a fresh visitor. Use `--profile` after
   `audit signin` for private pages.

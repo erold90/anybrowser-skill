@@ -167,6 +167,7 @@ headless Chromium of its own: nothing on screen, nothing changed in the user's b
 anybrowser.sh audit https://example.com                       # one page, ~2.5 s with the browser's start
 anybrowser.sh audit https://example.com --crawl 20 --links    # up to 20 pages of the site, every internal link checked
 anybrowser.sh audit example.com --mobile --slow               # a phone on slow 4G, CPU four times slower
+anybrowser.sh audit example.com --dark                        # the dark theme, which has colours of its own
 anybrowser.sh audit                                           # the page in front, visited afresh
 ```
 
@@ -243,7 +244,7 @@ ACT     click|dclick|rclick X Y|<name>|@ref · press <name> · fill <field> "tex
         menu <app> <menu> [<submenu>...] <item> · focus <app> · quit <app> · raise <title> · open <url> [app]
         window minimize|restore|maximize|fullscreen|close [title] · window move X Y [title] · window resize W H [title]
         hover X Y|<name> · move X Y · drag X1 Y1 X2 Y2|<name> <name> · scroll N [dx]
-AUDIT   audit [address] [--links [all]] [--crawl N] [--mobile] [--slow] [--wait S] [--shot file.png] [--json] [--profile] · audit signin <address>
+AUDIT   audit [address] [--links [all]] [--crawl N] [--mobile] [--slow] [--dark] [--wait S] [--shot file.png] [--json] [--profile] · audit signin <address>
 CHAIN   do "<cmd>" "<cmd>" ...  ·  do -   (steps from stdin)
 CHECK   check · version
 ```
