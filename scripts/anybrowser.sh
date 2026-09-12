@@ -24,4 +24,6 @@ if [ ! -x "$BIN" ] || [ -n "$(find "$SRC" -name '*.swift' -newer "$BIN" 2>/dev/n
   rm -f "$BIN.$$.log"
 fi
 
+# Where the binary finds files that ship with the skill (axe.min.js for the accessibility audit).
+export ANYBROWSER_DIR="$HERE"
 exec "$BIN" "$@"

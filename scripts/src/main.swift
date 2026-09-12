@@ -61,6 +61,12 @@ ACT  (each one waits for the app to react and reports what changed)
 
   do "<cmd>" "<cmd>" ...   run a sequence in one call; stops at the first failure
   do -                     the same, one step per line from stdin
+  do --save <name> "<cmd>"...   run it, and keep it as a macro once every step has passed
+  macro save <name> "<cmd with {value}>"... · macro run <name> key=value... · macro list · macro show|delete <name>
+
+FILES
+  waitdownload [secs]      wait for the download just started to finish: the file, its size, where it came from
+  pdf [address] [--out file.pdf] [--profile]   the page printed to PDF by a headless browser
 
   Lookups and actions stay on the app being worked on — the one the last command used. When another
   app comes forward (the terminal you run in), lookups read the work from behind it and actions bring
@@ -741,6 +747,7 @@ func perform(_ args: [String]) throws -> String {
             if inWindow { rememberFrontWindow(browser) }
             guard url != nil else { return "opened a new \(inWindow ? "window" : "tab") in \(browserName(browser))" }
             return loadedReport("new \(inWindow ? "window" : "tab") in \(browserName(browser)):", waitLoad(browser, from: nil, seconds: 20, opening: true), started)
+                + gateNote(pid: browser.processIdentifier)
         }
         if sub == "close" {
             let browser = try targetBrowser()
@@ -820,6 +827,7 @@ func perform(_ args: [String]) throws -> String {
         rememberFrontWindow(browser)
         guard url != nil else { return "opened a private window in \(browserName(browser))" }
         return loadedReport("private window in \(browserName(browser)):", waitLoad(browser, from: nil, seconds: 20, opening: true), started)
+            + gateNote(pid: browser.processIdentifier)
 
     case "go":
         guard let raw = a.first else { throw Fail(message: "go needs an address: go example.com", code: 2) }
@@ -860,7 +868,9 @@ func perform(_ args: [String]) throws -> String {
             guard let main = mainContent(web) else { throw Fail(message: "this page marks no main content — plain text reads it all") }
             scope = main
         }
-        guard var raw = scope.map({ elementText(web, $0) }) ?? pageText(web) else { throw Fail(message: "this page hands over no text — try read") }
+        guard var raw = scope.map({ elementText(web, $0) }) ?? pageText(web).map({ $0 + frameTexts(web) }) else {
+            throw Fail(message: "this page hands over no text — try read")
+        }
         // Chromium hands the text over without the breaks between blocks: take it line by line instead.
         if isChromiumWeb(web), let lines = pageLines(web, limit: max + 2000, within: scope) {
             raw = lines
@@ -901,7 +911,7 @@ func perform(_ args: [String]) throws -> String {
         let lines = numbered(nodes, limit: 150) { node in
             defer { i += 1 }
             var line = "\(node.name.isEmpty ? "(no text)" : clip(flat(node.name), 80)) — \(clip(urls[i], 120))"
-            if let p = node.point { line += "  ->  \(Int(p.x)) \(Int(p.y))" + (onScreen(p) ? "" : "  (offscreen)") }
+            if let p = node.point { line += "  ->  \(Int(p.x)) \(Int(p.y))" + (onScreen(p) && !node.offscreen ? "" : "  (offscreen)") }
             if times[i] > 1 { line += "  (×\(times[i]))" }
             return line
         }
@@ -946,6 +956,10 @@ func perform(_ args: [String]) throws -> String {
                     hits += webSearch(inner, key, text: text.isEmpty ? nil : text, limit: 200)
                 }
             }
+            // Safari's page index already reaches into its frames: each element once.
+            var unique: [AXUIElement] = []
+            for h in hits where !unique.contains(where: { CFEqual($0, h) }) { unique.append(h) }
+            hits = unique
         }
         if countOnly {
             return "\(hits.count) \(singular)\(hits.count == 1 ? "" : "s")" + (text.isEmpty ? "" : " matching \(text)")
@@ -1120,11 +1134,29 @@ func perform(_ args: [String]) throws -> String {
         lines += workReport()
         return lines.joined(separator: "\n")
 
+    case "macro":
+        return try macroCommand(a)
+
+    case "waitdownload":
+        let secs = a.isEmpty ? 60 : try number(a[0], "seconds")
+        return try waitDownload(try? targetBrowser(), seconds: secs)
+
+    case "pdf":
+        return try pdfCommand(a)
+
     case "do":
         var lines: [String] = []
-        // do - : one step per line from stdin; blank lines and # comments skipped.
         var steps = a
-        if a == ["-"] {
+        // do --save <name> …: kept as a macro once every step has passed.
+        var saveAs: String? = nil
+        if steps.first == "--save" {
+            guard steps.count >= 3 else { throw Fail(message: "do --save needs a name and the steps", code: 2) }
+            saveAs = steps[1]
+            _ = try macroPath(steps[1])
+            steps = Array(steps.dropFirst(2))
+        }
+        // do - : one step per line from stdin; blank lines and # comments skipped.
+        if steps == ["-"] {
             let input = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
             steps = input.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty && !$0.hasPrefix("#") }
@@ -1141,9 +1173,10 @@ func perform(_ args: [String]) throws -> String {
             } catch let f as Fail {
                 lines.append("[\(i + 1)] \(step)\n    FAILED: \(f.message)")
                 say(lines.joined(separator: "\n"))
-                throw Fail(message: "stopped at step \(i + 1) of \(a.count)", code: f.code)
+                throw Fail(message: "stopped at step \(i + 1) of \(a.count)" + (saveAs.map { " — macro \($0) not saved" } ?? ""), code: f.code)
             }
         }
+        if let name = saveAs { lines.append(try saveMacro(name, a)) }
         return lines.joined(separator: "\n")
 
     default:

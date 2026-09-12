@@ -260,6 +260,16 @@ let pageScript = #"""
       .filter(e => !labelled(e) && (!e.checkVisibility || e.checkVisibility())).map(e => e.name || e.id || e.type).slice(0, 20),
     namelessButtons: all('button, [role=button]').filter(b => !b.textContent.trim() && !b.getAttribute('aria-label') && !b.title).length,
     duplicateIds: [...new Set(ids.filter((id, i) => id && ids.indexOf(id) !== i))].slice(0, 10),
+    // Images sent far bigger than they're shown: the source's pixels against the box's, times the screen's density.
+    oversized: all('img').map(i => {
+      const w = i.naturalWidth, h = i.naturalHeight, bw = i.clientWidth, bh = i.clientHeight;
+      if (!w || !bw || i.currentSrc.startsWith('data:')) return null;
+      const dpr = window.devicePixelRatio || 1, factor = (w * h) / (bw * bh * dpr * dpr);
+      return factor >= 3 ? { src: i.currentSrc, nat: w + '×' + h, box: Math.round(bw) + '×' + Math.round(bh), factor: Math.round(factor) } : null;
+    }).filter(Boolean).slice(0, 12),
+    // Structured data that isn't valid JSON: search engines drop it silently.
+    badJsonLd: all('script[type="application/ld+json"]').map((s, i) => { try { JSON.parse(s.textContent); return null; } catch (e) { return i + 1; } }).filter(x => x !== null),
+    httpLinks: [...new Set(all('a[href^="http:"]').map(a => a.href))].slice(0, 8),
     links: [...new Set(all('a[href]').map(a => a.href).filter(h => /^https?:/i.test(h)).map(h => h.split('#')[0]))],
     nodes: document.getElementsByTagName('*').length,
     ttfb: nav.responseStart || null, domContentLoaded: nav.domContentLoadedEventEnd || null, load: nav.loadEventEnd || null,
@@ -298,11 +308,124 @@ struct PageReport {
     var info: [String: Any] = [:]
     var metrics: [String: Double] = [:]
     var cookies: [[String: Any]] = []
+    var a11y: [Finding] = []
+    var a11yRan = false
     var links: [String] { info["links"] as? [String] ?? [] }
     var address: String { finalURL.isEmpty ? url : finalURL }
+    /// One number for "did it get worse", to compare with a saved run.
+    var score: [String: Int] {
+        ["errors": errors.count, "warnings": warnings.count, "a11y": a11y.count,
+         "requests": requests.filter { $0.failed == nil }.count]
+    }
 }
 
-func auditPage(_ cdp: CDP, session: String, url: String, wait: Double) -> PageReport {
+/// Loaded, then the network quiet for half a second — or only long-lived connections left.
+/// Returns when the load event came, or nil if it never did within `wait`.
+func waitQuiet(_ cdp: CDP, session: String, from mark: Int, started: Double, wait: Double) -> Double? {
+    var loadedAt: Double? = nil
+    var lastActivity = now()
+    var seen = mark
+    var inflight = Set<String>()
+    while now() - started < wait {
+        let batch = cdp.events(from: seen)
+        seen += batch.count
+        for e in batch where e.session == session {
+            switch e.method {
+            case "Page.loadEventFired": loadedAt = loadedAt ?? now()
+            case "Network.requestWillBeSent": inflight.insert(e.params.str("requestId")); lastActivity = now()
+            case "Network.loadingFinished", "Network.loadingFailed": inflight.remove(e.params.str("requestId")); lastActivity = now()
+            default: break
+            }
+        }
+        if let loaded = loadedAt, now() - lastActivity > 0.5, inflight.isEmpty || now() - loaded > 2 { break }
+        pause(40)
+    }
+    debug("audit: \(loadedAt == nil ? "no load event" : "loaded"), \(inflight.count) requests still open")
+    return loadedAt
+}
+
+/// axe-core, shipped beside the binary (MPL-2.0). nil when it isn't there.
+func axeSource() -> String? {
+    let dir = ProcessInfo.processInfo.environment["ANYBROWSER_DIR"] ?? (CommandLine.arguments.first.map { ($0 as NSString).deletingLastPathComponent } ?? ".")
+    for path in [dir + "/axe.min.js", dir + "/scripts/axe.min.js"] {
+        if let s = try? String(contentsOfFile: path, encoding: .utf8) { return s }
+    }
+    return nil
+}
+
+/// Run axe-core in the page and turn its violations into findings. Each rule once, the widest impact first.
+func runAxe(_ cdp: CDP, session: String) -> (findings: [Finding], ran: Bool) {
+    guard let axe = axeSource() else { return ([], false) }
+    guard tryCDP(cdp, "Runtime.evaluate", ["expression": axe, "returnByValue": false], session: session, timeout: 10) != nil else { return ([], false) }
+    let run = """
+        axe.run(document, {resultTypes:['violations'], reporter:'no-passes'}).then(r => JSON.stringify(r.violations.map(v => ({
+          id: v.id, impact: v.impact, help: v.help, n: v.nodes.length,
+          where: v.nodes.slice(0,3).map(n => (n.target||[]).join(' ')).filter(Boolean)
+        })))).catch(e => 'ERR ' + e.message)
+        """
+    guard let r = tryCDP(cdp, "Runtime.evaluate", ["expression": run, "awaitPromise": true, "returnByValue": true], session: session, timeout: 30),
+          let json = r.dict("result")["value"] as? String, !json.hasPrefix("ERR"),
+          let list = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [[String: Any]] else { return ([], true) }
+    let rank = ["critical": 0, "serious": 1, "moderate": 2, "minor": 3]
+    let findings = list.sorted { (rank[$0.str("impact")] ?? 4, -$0.num("n")) < (rank[$1.str("impact")] ?? 4, -$1.num("n")) }.map { v -> Finding in
+        let where_ = (v["where"] as? [String] ?? []).joined(separator: ", ")
+        let n = Int(v.num("n"))
+        return Finding(kind: v.str("impact").isEmpty ? "a11y" : v.str("impact"),
+                       text: clip("\(v.str("id")): \(v.str("help")) — \(n) element\(n == 1 ? "" : "s")" + (where_.isEmpty ? "" : " (\(where_))"), 200))
+    }
+    return (findings, true)
+}
+
+/// The page as a PDF, printed by the headless browser: a public page visited afresh, or signed in with --profile.
+func pdfCommand(_ a: [String]) throws -> String {
+    var address = "", out = "", profile = false
+    var i = 0
+    while i < a.count {
+        switch a[i] {
+        case "--out":
+            guard let p = a[safe: i + 1], p.hasPrefix("/"), p.lowercased().hasSuffix(".pdf") else {
+                throw Fail(message: "--out takes an absolute path ending in .pdf", code: 2)
+            }
+            out = p
+            i += 1
+        case "--profile":
+            profile = true
+        default:
+            if a[i].hasPrefix("--") { throw Fail(message: "unknown pdf option: \(a[i]) — --out file.pdf, --profile", code: 2) }
+            address = try normalizeURL(a[i])
+        }
+        i += 1
+    }
+    if address.isEmpty {
+        guard let browser = try? targetBrowser(), let u = currentURL(browser), u.lowercased().hasPrefix("http") else {
+            throw Fail(message: "pdf needs an address, or a web page open in a browser", code: 2)
+        }
+        address = u
+    }
+    if out.isEmpty { out = tempDir + (URL(string: address)?.host ?? "page") + ".pdf" }
+    let started = now()
+    let chrome = try Headless(profile: profile)
+    defer { chrome.stop() }
+    let cdp = chrome.cdp
+    guard let target = try cdp.send("Target.createTarget", ["url": "about:blank"])["targetId"] as? String,
+          let session = try cdp.send("Target.attachToTarget", ["targetId": target, "flatten": true])["sessionId"] as? String else {
+        throw Fail(message: "the headless browser gave no page to work in")
+    }
+    tryCDP(cdp, "Page.enable", session: session)
+    tryCDP(cdp, "Network.enable", session: session)
+    let mark = cdp.count
+    let navigated = try cdp.send("Page.navigate", ["url": address], session: session, timeout: 30)
+    if !navigated.str("errorText").isEmpty { throw Fail(message: "the page didn't load: \(navigated.str("errorText"))") }
+    if waitQuiet(cdp, session: session, from: mark, started: now(), wait: 25) == nil {
+        throw Fail(message: "the page didn't finish loading in 25 s")
+    }
+    let printed = try cdp.send("Page.printToPDF", ["printBackground": true, "preferCSSPageSize": true], session: session, timeout: 60)
+    guard let data = Data(base64Encoded: printed.str("data")), !data.isEmpty else { throw Fail(message: "the browser gave no PDF") }
+    try data.write(to: URL(fileURLWithPath: out))
+    return "saved \(address) as a PDF: \(out) (\(size(Double(data.count))), \(String(format: "%.1f", now() - started)) s)"
+}
+
+func auditPage(_ cdp: CDP, session: String, url: String, wait: Double, a11y: Bool = false) -> PageReport {
     var report = PageReport(url: url)
     let mark = cdp.count
     let started = now()
@@ -319,26 +442,7 @@ func auditPage(_ cdp: CDP, session: String, url: String, wait: Double) -> PageRe
     }
     var extraIssues: [[String: Any]] = []
     if report.failure == nil {
-        // Loaded, then the network quiet for half a second — or only long-lived connections left.
-        var loadedAt: Double? = nil
-        var lastActivity = now()
-        var seen = mark
-        var inflight = Set<String>()
-        while now() - started < wait {
-            let batch = cdp.events(from: seen)
-            seen += batch.count
-            for e in batch where e.session == session {
-                switch e.method {
-                case "Page.loadEventFired": loadedAt = loadedAt ?? now()
-                case "Network.requestWillBeSent": inflight.insert(e.params.str("requestId")); lastActivity = now()
-                case "Network.loadingFinished", "Network.loadingFailed": inflight.remove(e.params.str("requestId")); lastActivity = now()
-                default: break
-                }
-            }
-            if let loaded = loadedAt, now() - lastActivity > 0.5, inflight.isEmpty || now() - loaded > 2 { break }
-            pause(40)
-        }
-        debug("audit: \(loadedAt == nil ? "no load event" : "loaded"), \(inflight.count) requests still open")
+        let loadedAt = waitQuiet(cdp, session: session, from: mark, started: started, wait: wait)
         if loadedAt == nil {
             report.warnings.append(Finding(kind: "load", text: "no load event within \(Int(wait)) s — audit --wait \(Int(wait) * 2) waits longer"))
         }
@@ -364,6 +468,12 @@ func auditPage(_ cdp: CDP, session: String, url: String, wait: Double) -> PageRe
         }
         pause(150)                                        // the checks' issues arrive as events
         debug("audit: metrics taken")
+        if a11y {
+            let (findings, ran) = runAxe(cdp, session: session)
+            report.a11y = findings
+            report.a11yRan = ran
+            debug("audit: axe \(ran ? "ran, \(findings.count) rules" : "not available")")
+        }
     }
     report.seconds = now() - started
     // Chrome measures text nobody can see too (a hidden screen, a panel at opacity 0): those don't count.
@@ -621,10 +731,11 @@ func pad(_ s: String, _ n: Int) -> String { s.count >= n ? s + " " : s + String(
 struct AuditOptions {
     var url = ""
     var wait = 15.0
-    var mobile = false, slow = false, json = false, profile = false, dark = false
+    var mobile = false, slow = false, json = false, profile = false, dark = false, a11y = false, save = false
     var links = false, allLinks = false
     var crawl = 1
     var shot: String? = nil
+    var fullShot = false
 }
 
 func auditCommand(_ a: [String]) throws -> String {
@@ -637,6 +748,8 @@ func auditCommand(_ a: [String]) throws -> String {
         case "--mobile": o.mobile = true
         case "--slow": o.slow = true
         case "--dark": o.dark = true
+        case "--a11y", "--accessibility": o.a11y = true
+        case "--save": o.save = true
         case "--json": o.json = true
         case "--profile": o.profile = true
         case "--links":
@@ -649,15 +762,16 @@ func auditCommand(_ a: [String]) throws -> String {
         case "--wait":
             o.wait = try number(a[safe: i + 1], "--wait")
             i += 1
-        case "--shot":
+        case "--shot", "--fullshot":
             guard let path = a[safe: i + 1], path.hasPrefix("/"), path.lowercased().hasSuffix(".png") else {
-                throw Fail(message: "--shot takes an absolute path ending in .png", code: 2)
+                throw Fail(message: "\(w) takes an absolute path ending in .png", code: 2)
             }
             o.shot = path
+            o.fullShot = w == "--fullshot"
             i += 1
         default:
             if w.hasPrefix("--") {
-                throw Fail(message: "unknown audit option: \(w) — --mobile --slow --dark --links [all] --crawl N --wait S --shot file.png --json --profile", code: 2)
+                throw Fail(message: "unknown audit option: \(w) — --mobile --slow --dark --a11y --save --links [all] --crawl N --wait S --shot|--fullshot file.png --json --profile", code: 2)
             }
             o.url = try normalizeURL(w)
         }
@@ -747,9 +861,9 @@ func runAudit(_ o: AuditOptions, note: String) throws -> String {
     while !queue.isEmpty && pages.count < o.crawl {
         let next = queue.removeFirst()
         guard visited.insert(pageKey(next)).inserted else { continue }
-        let page = auditPage(cdp, session: session, url: next, wait: o.slow ? max(o.wait, 30) : o.wait)
+        let page = auditPage(cdp, session: session, url: next, wait: o.slow ? max(o.wait, 30) : o.wait, a11y: o.a11y)
         if pages.isEmpty, let path = o.shot, page.failure == nil,
-           let shot = try? cdp.send("Page.captureScreenshot", ["format": "png"], session: session),
+           let shot = try? cdp.send("Page.captureScreenshot", ["format": "png", "captureBeyondViewport": o.fullShot], session: session),
            let data = Data(base64Encoded: shot.str("data")) {
             try? data.write(to: URL(fileURLWithPath: path))
         }
@@ -773,10 +887,58 @@ func runAudit(_ o: AuditOptions, note: String) throws -> String {
         broken.sort { $0.url < $1.url }
     }
     let search = pages.first.map { $0.failure == nil ? searchLine($0.address, agent: agent) : "" } ?? ""
+    // Files that must never answer 200: they leak secrets or source. Only for a site the user owns.
+    if !pages.isEmpty, pages[0].failure == nil {
+        for finding in exposedFiles(pages[0].address, agent: agent) { pages[0].errors.append(finding) }
+    }
     let browser = chrome.browser
     let seconds = now() - started
+    var change = ""
+    if o.save { change = saveAndCompare(o.url, pages: pages) }
     return o.json ? auditJSON(pages, broken: broken, checked: checked, browser: browser, seconds: seconds, search: search)
-                  : auditText(pages, o, broken: broken, checked: checked, browser: browser, seconds: seconds, note: note, search: search)
+                  : auditText(pages, o, broken: broken, checked: checked, browser: browser, seconds: seconds, note: note, search: search, change: change)
+}
+
+// MARK: - Comparing a run with the last saved one
+
+let auditHistory = ProcessInfo.processInfo.environment["ANYBROWSER_AUDITS"] ?? home + "/Library/Application Support/anybrowser/audits"
+
+func historyPath(_ url: String) -> String {
+    let key = (hostOf(url) + (URL(string: url)?.path ?? "")).replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: #"[^A-Za-z0-9._-]"#, with: "", options: .regularExpression)
+    return auditHistory + "/" + (key.isEmpty ? "site" : key) + ".json"
+}
+
+/// Save this run's totals per page, and say what changed since the last save.
+func saveAndCompare(_ url: String, pages: [PageReport]) -> String {
+    let path = historyPath(url)
+    let now = pages.reduce(into: [String: [String: Int]]()) { $0[pageKey($1.url)] = $1.score }
+    var line = ""
+    if let data = FileManager.default.contents(atPath: path),
+       let prev = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let was = prev["pages"] as? [String: [String: Int]] {
+        var parts: [String] = []
+        for (page, score) in now.sorted(by: { $0.key < $1.key }) {
+            guard let before = was[page] else { parts.append("new page \(shortURL(page, url))"); continue }
+            for key in ["errors", "warnings", "a11y"] {
+                let d = (score[key] ?? 0) - (before[key] ?? 0)
+                if d != 0 { parts.append("\(shortURL(page, url)): \(key) \(d > 0 ? "+\(d)" : "\(d)")") }
+            }
+        }
+        for page in was.keys where now[page] == nil { parts.append("gone \(shortURL(page, url))") }
+        let when = (prev["at"] as? String).map { " (since \($0))" } ?? ""
+        line = parts.isEmpty ? "nothing changed since the last saved run\(when)" : "since the last run\(when): " + parts.prefix(12).joined(separator: " · ")
+    } else {
+        line = "first saved run — the next audit --save says what changed"
+    }
+    let stamp = ISO8601DateFormatter()
+    stamp.formatOptions = [.withFullDate, .withTime, .withColonSeparatorInTime]
+    let record: [String: Any] = ["at": stamp.string(from: Date()), "pages": now]
+    try? FileManager.default.createDirectory(atPath: auditHistory, withIntermediateDirectories: true)
+    if let data = try? JSONSerialization.data(withJSONObject: record, options: [.prettyPrinted]) {
+        FileManager.default.createFile(atPath: path, contents: data)
+    }
+    return line
 }
 
 /// robots.txt, and the sitemap it names or /sitemap.xml: what a search engine reads first.
@@ -827,6 +989,40 @@ func searchLine(_ address: String, agent: String) -> String {
     let missing = get(origin + "/anybrowser-no-such-page-\(Int(now()))")
     if missing.status == 200 { parts.append("missing pages answer 200 instead of 404 (a soft 404: add a 404 page)") }
     return parts.joined(separator: " · ")
+}
+
+/// Sensitive files that must not be public. A body that looks the wrong kind (a site that answers
+/// every path with its home page) doesn't count — the content has to match what the file really is.
+func exposedFiles(_ address: String, agent: String) -> [Finding] {
+    guard let url = URL(string: address), let scheme = url.scheme, let host = url.host else { return [] }
+    let origin = "\(scheme)://\(host)" + (url.port.map { ":\($0)" } ?? "")
+    let checks: [(path: String, what: String, looks: (String) -> Bool)] = [
+        ("/.env", "environment file with secrets", { $0.range(of: #"(?m)^[A-Z0-9_]+\s*="#, options: .regularExpression) != nil }),
+        ("/.git/config", "git repository config", { $0.contains("[core]") || $0.contains("[remote") }),
+        ("/.git/HEAD", "git repository", { $0.hasPrefix("ref:") }),
+        ("/wp-config.php.bak", "WordPress config backup", { $0.contains("DB_PASSWORD") || $0.contains("<?php") }),
+        ("/.DS_Store", "macOS folder index", { $0.contains("Bud1") || $0.utf8.count > 100 }),
+    ]
+    let config = URLSessionConfiguration.ephemeral
+    config.timeoutIntervalForRequest = 8
+    config.httpAdditionalHeaders = ["User-Agent": agent]
+    let session = URLSession(configuration: config)
+    defer { session.invalidateAndCancel() }
+    var found: [Finding] = []
+    let lock = NSLock()
+    let group = DispatchGroup()
+    for check in checks {
+        guard let target = URL(string: origin + check.path) else { continue }
+        group.enter()
+        session.dataTask(with: target) { data, response, _ in
+            defer { group.leave() }
+            guard (response as? HTTPURLResponse)?.statusCode == 200, let data = data,
+                  !data.isEmpty, check.looks(String(decoding: data.prefix(4000), as: UTF8.self)) else { return }
+            lock.lock(); found.append(Finding(kind: "exposed", text: "\(check.path) is public — \(check.what)")); lock.unlock()
+        }.resume()
+    }
+    _ = group.wait(timeout: .now() + 12)
+    return found.sorted { $0.text < $1.text }
 }
 
 /// Every link, HEAD first and GET when a server refuses HEAD, eight at a time.
@@ -946,6 +1142,14 @@ func pageFacts(_ p: PageReport) -> (facts: String, problems: [String]) {
     if nameless > 0 { problems.append("\(nameless) button\(nameless == 1 ? "" : "s") without a name") }
     let duplicates = i["duplicateIds"] as? [String] ?? []
     if !duplicates.isEmpty { problems.append("duplicate ids: " + duplicates.prefix(5).joined(separator: ", ")) }
+    let badJson = i["badJsonLd"] as? [Any] ?? []
+    if !badJson.isEmpty { problems.append("\(badJson.count) structured-data block\(badJson.count == 1 ? "" : "s") isn't valid JSON (search engines drop it)") }
+    let oversized = i["oversized"] as? [[String: Any]] ?? []
+    if !oversized.isEmpty {
+        let worst = oversized.sorted { $0.num("factor") > $1.num("factor") }.prefix(3)
+            .map { "\(shortURL($0.str("src"), p.address)) \($0.str("nat"))→\($0.str("box")) (\(Int($0.num("factor")))×)" }
+        problems.append("\(oversized.count) oversized image\(oversized.count == 1 ? "" : "s"): " + worst.joined(separator: ", "))
+    }
     if let robots = i["robots"] as? String, robots.lowercased().contains("noindex") { problems.append("robots: \(robots)") }
     return (facts.joined(separator: " · "), problems)
 }
@@ -1006,7 +1210,7 @@ func findingLines(_ findings: [(page: String, finding: Finding)], pageColumn: In
 }
 
 func auditText(_ pages: [PageReport], _ o: AuditOptions, broken: [(url: String, result: String, on: [String])], checked: Int,
-               browser: String, seconds: Double, note: String, search: String) -> String {
+               browser: String, seconds: Double, note: String, search: String, change: String = "") -> String {
     guard let first = pages.first else { return "audit \(o.url): nothing audited" }
     var out: [String] = []
     let how = "\(browser) headless" + (o.mobile ? ", phone" : "") + (o.slow ? ", slow 4G + CPU ×4" : "") + (o.dark ? ", dark theme" : "")
@@ -1037,6 +1241,14 @@ func auditText(_ pages: [PageReport], _ o: AuditOptions, broken: [(url: String, 
     out += findingLines(errors, pageColumn: column)
     out.append("warnings \(warnings.count)" + (warnings.isEmpty ? "" : ":"))
     out += findingLines(warnings, pageColumn: column, limit: 25)
+    // Accessibility from axe-core, only when asked (--a11y).
+    if pages.contains(where: { $0.a11yRan }) {
+        let a11y = pages.flatMap { p in p.a11y.map { (shortURL(p.url, base), $0) } }
+        out.append("a11y     \(a11y.count)" + (a11y.isEmpty ? " (axe-core: no violations)" : " (axe-core):"))
+        out += findingLines(a11y, pageColumn: column, limit: 30)
+    } else if !o.a11y {
+        out.append("a11y     not checked — add --a11y for axe-core's WCAG rules")
+    }
     if pages.count == 1 {
         let (facts, problems) = pageFacts(first)
         if !facts.isEmpty { out.append("page     " + facts) }
@@ -1072,7 +1284,8 @@ func auditText(_ pages: [PageReport], _ o: AuditOptions, broken: [(url: String, 
             }
         }
     }
-    if let shot = o.shot { out.append("shot     \(shot)") }
+    if !change.isEmpty { out.append("change   " + change) }
+    if let shot = o.shot { out.append("shot     \(shot)\(o.fullShot ? " (full page)" : "")") }
     return out.joined(separator: "\n")
 }
 
@@ -1085,6 +1298,7 @@ func auditJSON(_ pages: [PageReport], broken: [(url: String, result: String, on:
             "url": p.url, "finalURL": p.finalURL, "status": p.status, "seconds": (p.seconds * 100).rounded() / 100,
             "errors": p.errors.map { ["kind": $0.kind, "text": $0.text] },
             "warnings": p.warnings.map { ["kind": $0.kind, "text": $0.text] },
+            "a11y": p.a11y.map { ["impact": $0.kind, "text": $0.text] },
             "page": info, "problems": pageFacts(p).problems, "links": p.links, "metrics": p.metrics,
             "headers": p.main?.headers ?? [:],
             "requests": p.requests.map { r -> [String: Any] in

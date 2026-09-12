@@ -36,6 +36,41 @@ binary, ~30 s). Before the first task: `scripts/anybrowser.sh check`.
 | Address and title | `url` | |
 | JavaScript | `js "document.title"` — only if the user enabled it (see below) | |
 
+## Macros: a chain kept and run again
+
+A flow that worked — a flight lookup, a login-and-read — is worth keeping. Write `{name}` where a
+value changes:
+
+```
+anybrowser.sh macro save ryanair 'go "https://www.ryanair.com/it/it/trip/flights/select?dateOut={date}&originIata={from}&destinationIata={to}&adults=1&isReturn=false&tpStartDate={date}&tpOriginIata={from}&tpDestinationIata={to}"' 'click "No, grazie"' 'waitfor Seleziona 15' 'find button Seleziona'
+anybrowser.sh macro run ryanair from=BDS to=BGY date=2026-10-15
+```
+
+`do --save <name> "<step>"…` keeps a chain the moment every step has passed. `macro list`,
+`macro show <name>`, `macro delete <name>`. `go` opens a window if the browser has none, so a macro
+runs from nothing. Kept in `~/Library/Application Support/anybrowser/macros`.
+
+## Walls only the user passes
+
+After a navigation, the report ends with `⚠ …` when the page stops the agent:
+
+- `⚠ a bot check stands before the page` (Cloudflare's "Just a moment", a hold-to-continue) — `waitgone`
+  it for a few seconds; if it stays, hand it to the user.
+- `⚠ a CAPTCHA is on the page` (reCAPTCHA, hCaptcha, Turnstile) — only the user answers it. **Never
+  solve a CAPTCHA.**
+- `⚠ sign-in with SPID or CIE` — the user does it on their phone; `waitfor` the page that follows.
+
+**Never type a password** (a web password field reads as a plain text field, so it isn't flagged —
+the rule holds anyway).
+
+## Downloads and PDF
+
+- `waitdownload [secs]` after clicking a download waits for the file to finish and reports it with its
+  size and where it came from. A browser asking where to save, or whether to allow it, is a dialog —
+  answer it first.
+- `pdf [address] [--out file.pdf] [--profile]` prints a page to PDF from a headless browser — a public
+  page, or one behind a login with `--profile` (see the audit section).
+
 The browser meant is the one in front, else the one whose window is highest.
 Name another with `ANYBROWSER_BROWSER=chrome anybrowser.sh …` for one call, or `use chrome`
 as a step of a `do` — it lasts until that `do` ends, not into the next call.
@@ -168,6 +203,9 @@ anybrowser.sh audit https://example.com                       # one page, ~2.5 s
 anybrowser.sh audit https://example.com --crawl 20 --links    # up to 20 pages of the site, every internal link checked
 anybrowser.sh audit example.com --mobile --slow               # a phone on slow 4G, CPU four times slower
 anybrowser.sh audit example.com --dark                        # the dark theme, which has colours of its own
+anybrowser.sh audit example.com --a11y                        # axe-core's ~90 WCAG rules, with the element
+anybrowser.sh audit example.com --save                        # record it, and say what changed since last time
+anybrowser.sh audit example.com --fullshot /abs/page.png      # a picture of the whole page, top to bottom
 anybrowser.sh audit                                           # the page in front, visited afresh
 ```
 
@@ -180,6 +218,9 @@ anybrowser.sh audit                                           # the page in fron
 | `weight` | requests and bytes by kind, the other hosts it loads from |
 | `security` | TLS and the certificate's days left, missing security headers, a server telling its version, cookie flags (never values) |
 | `links` | with `--links`: broken ones and the pages linking to them; `--links all` checks other sites' too |
+| `a11y` | with `--a11y`: axe-core's WCAG violations, worst impact first, with the element |
+| `errors` (extra) | exposed files (`/.env`, `/.git/config`); oversized images; structured data that isn't valid JSON |
+| `change` | with `--save`: what got better or worse since the last saved run of that address |
 
 `--json` has everything, every request with its status, size and wait; `--shot /abs/page.png`
 a picture. Behind a login: `audit signin <address>` opens the audit profile in a window, **the
@@ -244,7 +285,7 @@ ACT     click|dclick|rclick X Y|<name>|@ref · press <name> · fill <field> "tex
         menu <app> <menu> [<submenu>...] <item> · focus <app> · quit <app> · raise <title> · open <url> [app]
         window minimize|restore|maximize|fullscreen|close [title] · window move X Y [title] · window resize W H [title]
         hover X Y|<name> · move X Y · drag X1 Y1 X2 Y2|<name> <name> · scroll N [dx]
-AUDIT   audit [address] [--links [all]] [--crawl N] [--mobile] [--slow] [--dark] [--wait S] [--shot file.png] [--json] [--profile] · audit signin <address>
+AUDIT   audit [address] [--links [all]] [--crawl N] [--mobile] [--slow] [--dark] [--a11y] [--save] [--wait S] [--shot file.png] [--json] [--profile] · audit signin <address>
 CHAIN   do "<cmd>" "<cmd>" ...  ·  do -   (steps from stdin)
 CHECK   check · version
 ```

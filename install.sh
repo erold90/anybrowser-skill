@@ -22,6 +22,9 @@ for DEST in "${targets[@]}"; do
   cp "$HERE/SKILL.md" "$DEST/SKILL.md"
   cp "$HERE/scripts/anybrowser.sh" "$DEST/scripts/"
   cp "$HERE"/scripts/src/*.swift "$DEST/scripts/src/"
+  # axe-core (MPL-2.0), injected by the accessibility audit; its licence beside it.
+  cp "$HERE/scripts/axe.min.js" "$DEST/scripts/" 2>/dev/null || true
+  cp "$HERE/scripts/axe-LICENSE.txt" "$DEST/scripts/" 2>/dev/null || true
   chmod +x "$DEST/scripts/anybrowser.sh"
   # Playbooks: what an agent should know before driving a specific browser or site.
   cp -R "$HERE/playbooks" "$DEST/playbooks"

@@ -130,5 +130,37 @@ else
   echo "skip  audit: no Chromium or Chrome installed"
 fi
 
+# Macros: kept in ANYBROWSER_MACROS, so the test keeps its own apart.
+export ANYBROWSER_MACROS="$TMP/macros"
+t "macro save needs a name and a step" says "needs a name and at least one step" "$M" macro save onlyname
+"$M" macro save trip 'go "example.com/{q}?p={p}"' 'text' >/dev/null 2>&1
+t "macro list shows it with its values" bash -c "\"$M\" macro list | grep -q 'trip.*values: q p'"
+t "macro show prints the steps"        bash -c "\"$M\" macro show trip | grep -q '\[2\] text'"
+t "macro run needs its values"         says "needs: q=… p=…" "$M" macro run trip
+t "macro run needs a known name"       says "no macro named" "$M" macro run nope
+t "do --save needs a name and steps"   says "needs a name and the steps" "$M" do --save onlyname
+t "macro delete removes it"            bash -c "\"$M\" macro delete trip | grep -q deleted && ! \"$M\" macro show trip 2>/dev/null"
+t "waitdownload needs a real folder"   bash -c "\"$M\" waitdownload 1 2>&1 | grep -Eq 'no download|still downloading'"
+t "pdf refuses a non-pdf path"         says "absolute path ending in .pdf" "$M" pdf example.com --out /tmp/x.txt
+t "audit refuses a bad zoom-like opt"  says "unknown audit option" "$M" audit example.com --wibble
+t "audit --fullshot wants a .png"      says "ending in .png" "$M" audit example.com --fullshot /tmp/x.jpg
+
+# The accessibility audit and save/compare, headless — only where a Chromium/Chrome is installed.
+if ls /Applications/Chromium.app /Applications/Google\ Chrome.app >/dev/null 2>&1; then
+  python3 -m http.server 8767 --bind 127.0.0.1 --directory "$HERE/tests" >/dev/null 2>&1 &
+  AXSERVER=$!
+  sleep 1
+  export ANYBROWSER_DIR="$HERE/scripts"       # so the binary finds axe.min.js
+  AX=$("$M" audit http://127.0.0.1:8767/audit.html --a11y 2>&1)
+  t "audit --a11y runs axe-core"        bash -c "grep -Eq 'a11y +[0-9]+ \(axe-core' <<<\"\$0\"" "$AX"
+  t "axe finds the missing form label"  bash -c "grep -q 'label:' <<<\"\$0\"" "$AX"
+  export ANYBROWSER_AUDITS="$TMP/audits"      # keep saved runs out of the real store
+  SV1=$("$M" audit http://127.0.0.1:8767/audit.html --save 2>&1)
+  t "audit --save records the first run" bash -c "grep -q 'first saved run' <<<\"\$0\"" "$SV1"
+  kill "$AXSERVER" 2>/dev/null; wait "$AXSERVER" 2>/dev/null
+else
+  echo "skip  a11y/save audit: no Chromium or Chrome installed"
+fi
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

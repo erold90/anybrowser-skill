@@ -14,6 +14,8 @@ PORT="${PORT:-8765}"
 V="$(date +%s)"
 URL="http://127.0.0.1:$PORT/page.html?v=$V"          # no stale copy from the browser cache
 URL2="http://127.0.0.1:$PORT/page.html?second=$V"
+URL3="http://127.0.0.1:$PORT/botcheck.html?v=$V"
+URL4="http://127.0.0.1:$PORT/signin.html?v=$V"
 re() { printf '%s' "$1" | sed 's/[.?]/\\&/g'; }          # an address as a literal in a pattern
 TMP="$(mktemp -d)"
 FILE="$TMP/logo.txt"; echo test > "$FILE"
@@ -105,6 +107,11 @@ commands() {
   t "$browser: tabs lists the page"         "anybrowser test — $(re "$URL2")" "$out"
   t "$browser: rows counted, not read"      "^    3 rows$" "$out"
   t "$browser: find looks inside frames of other sites" "Frame button  \[Button\]" "$out"
+
+  # A page that stops the agent (a fake bot check) is flagged, not treated as done.
+  gate=$("$M" go "$URL3" 2>&1)
+  t "$browser: a bot check is flagged"      "⚠ a bot check stands before the page" "$gate"
+  "$M" go "$URL" >/dev/null 2>&1        # back to the test page for whatever runs next
 }
 
 # --- Safari, in a window of its own -----------------------------------------------

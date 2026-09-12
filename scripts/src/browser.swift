@@ -811,6 +811,19 @@ func currentURL(_ browser: NSRunningApplication) -> String? {
 func navigate(_ op: String, url: String? = nil) throws -> String {
     let browser = try targetBrowser()
     let started = now()
+    // go with no window open: open one, so a macro or a first command doesn't fail on "no window".
+    if op == "go", family(browser) != .other {
+        let ax = AXUIElementCreateApplication(browser.processIdentifier)
+        AXUIElementSetMessagingTimeout(ax, 1)
+        if realWindows(ax).isEmpty {
+            try waitIfTyping(for: browser.processIdentifier)
+            _ = try Scripting.call(browser, "new", [url!, "window"])
+            bringToFront(browser)
+            rememberFrontWindow(browser)
+            return loadedReport("opened \(browserName(browser)):", waitLoad(browser, from: nil, seconds: 20, opening: true), started)
+                + gateNote(pid: browser.processIdentifier)
+        }
+    }
     let mark = pageMark(browser)
     var before: String? = mark.url
     switch (op, family(browser)) {
@@ -849,7 +862,44 @@ func navigate(_ op: String, url: String? = nil) throws -> String {
     if (op == "back" || op == "forward"), let b = before, result.url == b {
         return "\(op): nothing to go \(op) to — still on \(b)"
     }
-    return loadedReport(verb, result, started)
+    return loadedReport(verb, result, started) + gateNote(pid: browser.processIdentifier)
+}
+
+// MARK: - Walls only the user passes
+
+/// " · ⚠ …" when the page in the front window stops the agent: a bot check, a CAPTCHA, a sign-in.
+func gateNote(pid: pid_t) -> String {
+    let app = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(app, 1)
+    guard let win = app.element(kAXFocusedWindowAttribute) ?? app.element(kAXMainWindowAttribute), let web = webArea(in: win),
+          let gate = pageGate(web, title: win.text(kAXTitleAttribute)) else { return "" }
+    return " · ⚠ " + gate
+}
+
+func pageGate(_ web: AXUIElement, title: String) -> String? {
+    let heading = (web.text(kAXTitleAttribute) + " " + title).lowercased()
+    let text = String((pageText(web) ?? "").prefix(6000)).lowercased()
+    // A bot check stands in for the whole page, with little else on it.
+    let checks = ["just a moment", "un momento", "verify you are human", "verifica di essere un essere umano", "verifica che tu sia umano",
+                  "checking your browser", "attention required", "press & hold", "tieni premuto", "are you a robot"]
+    if checks.contains(where: { heading.contains($0) || (text.count < 1500 && text.contains($0)) }) {
+        return "a bot check stands before the page: waitgone it for a few seconds; if it stays, only the user can pass it"
+    }
+    for frameElement in webSearch(web, "AXFrameSearchKey", limit: 12) {
+        let label = (frameElement.text(kAXTitleAttribute) + " " + frameElement.text(kAXDescriptionAttribute)).lowercased()
+        if ["recaptcha", "hcaptcha", "turnstile", "security challenge", "sfida di sicurezza", "captcha"].contains(where: { label.contains($0) }) {
+            return "a CAPTCHA is on the page: only the user answers it — ask them, then waitfor what comes after"
+        }
+    }
+    if text.contains("non sono un robot") || text.contains("i'm not a robot") {
+        return "a CAPTCHA is on the page: only the user answers it — ask them, then waitfor what comes after"
+    }
+    if webSearch(web, "AXAnyTypeSearchKey", text: "SPID", limit: 30).contains(where: { ["Link", "Button"].contains($0.role) }) {
+        return "sign-in with SPID or CIE: the user does it, on their phone — then waitfor the page that follows"
+    }
+    // A web password field reads as a plain TextField (Safari and Chromium both), so it can't be
+    // told apart here. The "never type a password" rule covers it at fill time instead.
+    return nil
 }
 
 // MARK: - Files a browser keeps
@@ -1174,12 +1224,60 @@ func whereFrom(_ path: String) -> String? {
 
 /// What came down last: the download folder, newest first, with where each file
 /// came from (macOS records it on every download, whichever browser saved it).
-func downloadsReport(_ browser: NSRunningApplication?, count: Int) throws -> String {
-    var folder = home + "/Downloads"
+/// Where the browser saves downloads: Chrome's own setting, else the user's Downloads.
+func downloadFolder(_ browser: NSRunningApplication?) -> String {
     if let b = browser, family(b) == .chromium, let profile = try? chromiumProfile(b),
        let dir = (readJSON(profile + "/Preferences")?["download"] as? [String: Any])?["default_directory"] as? String, !dir.isEmpty {
-        folder = dir
+        return dir
     }
+    return home + "/Downloads"
+}
+
+func addedDate(_ u: URL) -> Date {
+    let v = try? u.resourceValues(forKeys: [.addedToDirectoryDateKey, .contentModificationDateKey])
+    return v?.addedToDirectoryDate ?? v?.contentModificationDate ?? .distantPast
+}
+
+let partialDownload: Set<String> = ["crdownload", "download", "part"]
+
+/// Wait for the download just started to finish: the newest file of the last minute whose
+/// half-done form (.crdownload, Safari's .download, .part) is gone and whose size holds still.
+func waitDownload(_ browser: NSRunningApplication?, seconds: Double) throws -> String {
+    let folder = downloadFolder(browser)
+    let since = Date().addingTimeInterval(-60)
+    let deadline = now() + seconds
+    var candidate: URL? = nil
+    var lastSize = -1
+    var stillSince = now()
+    var partial: [URL] = []
+    while now() < deadline {
+        let items = (try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: folder),
+                     includingPropertiesForKeys: [.addedToDirectoryDateKey, .contentModificationDateKey, .fileSizeKey],
+                     options: [.skipsHiddenFiles])) ?? []
+        let recent = items.filter { addedDate($0) >= since }
+        partial = recent.filter { partialDownload.contains($0.pathExtension.lowercased()) }
+        let done = recent.filter { !partialDownload.contains($0.pathExtension.lowercased()) }.sorted { addedDate($0) > addedDate($1) }
+        if partial.isEmpty, let file = done.first {
+            let bytes = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            if file == candidate && bytes == lastSize {
+                if now() - stillSince >= 0.8 {
+                    let from = whereFrom(file.path).map { " from \(String($0.prefix(100)))" } ?? ""
+                    return "downloaded \(file.lastPathComponent) (\(size(Double(bytes)))) into \(folder)\(from)"
+                }
+            } else {
+                candidate = file
+                lastSize = bytes
+                stillSince = now()
+            }
+        }
+        pause(250)
+    }
+    if let p = partial.first { throw Fail(message: "still downloading after \(Int(seconds)) s: \(p.lastPathComponent) — waitdownload \(Int(seconds) * 2) waits longer") }
+    throw Fail(message: "no download in \(folder) in the last minute — click the download first; a browser may be asking where to save or whether to allow it (take a shot)")
+}
+
+func downloadsReport(_ browser: NSRunningApplication?, count: Int) throws -> String {
+    let folder = downloadFolder(browser)
     let keys: [URLResourceKey] = [.addedToDirectoryDateKey, .contentModificationDateKey, .fileSizeKey, .isDirectoryKey]
     let items: [URL]
     do {

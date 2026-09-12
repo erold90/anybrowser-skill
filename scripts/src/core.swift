@@ -151,6 +151,7 @@ struct Node {
     var reachable = true          // a click at `point` lands on this element
     var on: Bool? = nil           // checkboxes, radio buttons, switches: ticked or not
     var value: String? = nil      // what a field holds or a pop-up shows, when it has a label of its own
+    var offscreen = false         // Chromium gives it no real place: outside the page's view
 }
 
 let toggleRoles: Set<String> = ["CheckBox", "RadioButton", "Switch", "ToggleButton"]
@@ -242,6 +243,9 @@ func walk(_ root: AXUIElement, maxDepth: Int = 40, maxNodes: Int = 8000,
             }
             let enabled = value(values, 7) as? Bool
             var node = Node(el: el, name: name, role: role, point: point, disabled: enabled == false, inWeb: inWeb)
+            // Chromium squeezes an element outside the page's view into a line of no height on
+            // the window's bottom edge (every button below the fold read "-> 97 815").
+            if inWeb, let s = size, s.width > 0, s.height < 1 { node.offscreen = true }
             if toggleRoles.contains(role), let state = value(values, 3) as? NSNumber { node.on = state.intValue != 0 }
             if inputRoles.contains(role) || role == "PopUpButton", role != "SecureTextField" {
                 let held = str(value(values, 3))
@@ -331,7 +335,7 @@ func line(_ n: Node) -> String {
     var s = label(n)
     if let p = n.point {
         s += "  ->  \(Int(p.x)) \(Int(p.y))"
-        if !onScreen(p) { s += "  (offscreen)" }
+        if !onScreen(p) || n.offscreen { s += "  (offscreen)" }
     }
     if let on = n.on { s += on ? "  (on)" : "  (off)" }
     if n.disabled { s += "  (disabled)" }
@@ -381,7 +385,7 @@ func pick(_ needle: String, fields: Bool = false, roles: Set<String>? = nil, nee
         }
         throw Fail(message: "no element matching: \(needle)")
     }
-    if needPoint, let p = best.point, !reaches(p, best.el) {
+    if needPoint, let p = best.point, best.offscreen || !reaches(p, best.el) {
         // Off screen or covered: ask for it to be scrolled into view, then look again.
         best.el.perform("AXScrollToVisible")
         // Pages scroll smoothly, and Chromium starts only after a beat: take the position
@@ -399,8 +403,9 @@ func pick(_ needle: String, fields: Bool = false, roles: Set<String>? = nil, nee
             best = Node(el: best.el, name: best.name, role: best.role,
                         point: CGPoint(x: (pos.x + size.width / 2).rounded(), y: (pos.y + size.height / 2).rounded()),
                         disabled: best.disabled, inWeb: best.inWeb, on: best.on)
+            best.offscreen = best.inWeb && size.height < 1
         }
-        best.reachable = reaches(best.point!, best.el)
+        best.reachable = !best.offscreen && reaches(best.point!, best.el)
     }
     return best
 }
@@ -642,7 +647,18 @@ struct PageState { let web: AXUIElement; let text: String }
 func pageState() -> PageState? {
     guard let app = focusedApp(timeout: 0.5), let win = app.element(kAXFocusedWindowAttribute) ?? app.element(kAXMainWindowAttribute),
           let web = webArea(in: win), let text = pageText(web) else { return nil }
-    return PageState(web: web, text: text)
+    return PageState(web: web, text: text + frameTexts(web))
+}
+
+/// WebKit leaves the text of a page's frames out of the page's own — a consent panel or an
+/// embedded form lives in one, so a click there reported nothing. Chromium's page text holds them.
+func frameTexts(_ web: AXUIElement) -> String {
+    guard !isChromiumWeb(web) else { return "" }
+    var out = ""
+    for frameElement in webSearch(web, "AXFrameSearchKey", limit: 6) {
+        if let inner = webArea(in: frameElement), !CFEqual(inner, web), let t = pageText(inner), !t.isEmpty { out += "\n" + t }
+    }
+    return out
 }
 
 /// New text on the page after an action: a status line, an error, a result.
@@ -979,7 +995,9 @@ func acting(mayNavigate: Bool = false, link: Bool = false, _ body: () throws -> 
             } while now() < deadline && watch.events == 0 && after.changes(since: before, watch: watch).hasPrefix("→ no reaction")
         }
     }
-    let report = after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web, loaded: loaded ?? moved)
+    var report = after.changes(since: before, watch: watch, pageAdded: pageAdded, web: web, loaded: loaded ?? moved)
+    // A page that just arrived may be a wall only the user can pass.
+    if web && (loaded != nil || moved != nil) { report += gateNote(pid: after.pid) }
     return head.isEmpty ? report : "\(head) \(report)"
 }
 
