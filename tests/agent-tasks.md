@@ -59,3 +59,7 @@ Nothing local: pages the tests never saw. Each in a window of the agent's own.
 
 The agent starts with its own terminal in front and may be typed in meanwhile: this
 round also shows whether the tool's messages about the app in front are enough.
+
+History: 3/3 tasks, every step, 16 calls in ~4 min; 13 frictions — date and time fields,
+a quit report quoting the terminal, System Settings changing panes silently, radios read
+as covered mid-scroll, cut text unmarked — all fixed in `2192cc7`.
