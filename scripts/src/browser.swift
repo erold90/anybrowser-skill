@@ -274,7 +274,7 @@ func wakeWebTree(_ app: AXUIElement, pid: pid_t) -> Bool {
     let electron = FileManager.default.fileExists(atPath: frameworks + "/Electron Framework.framework")
         || FileManager.default.fileExists(atPath: frameworks + "/Chromium Embedded Framework.framework")
     guard electron || chromium.contains(where: { bundle.hasPrefix($0) }) else { return false }
-    let marker = NSTemporaryDirectory() + "anybrowser-web-\(pid)"
+    let marker = tempDir + "anybrowser-web-\(pid)"
     let age = (try? FileManager.default.attributesOfItem(atPath: marker)[.modificationDate] as? Date)
         .flatMap { $0 }.map { -$0.timeIntervalSinceNow } ?? .infinity
     guard age > 120 else { return false }
@@ -570,6 +570,7 @@ func pressMenuCommand(_ browser: NSRunningApplication, key: String, modifiers: I
 
 func bringToFront(_ browser: NSRunningApplication) {
     if NSWorkspace.shared.frontmostApplication?.processIdentifier == browser.processIdentifier { return }
+    try? waitIfTyping(for: browser.processIdentifier)
     browser.activate(options: [])
     _ = until(1.5) { NSWorkspace.shared.frontmostApplication?.processIdentifier == browser.processIdentifier }
 }

@@ -129,6 +129,7 @@ func perform(_ args: [String]) throws -> String {
             guard let f = frame(node.el), f.width > 0, f.height > 0 else { throw Fail(message: "\(label(node)) has no size on screen") }
             return try shot(name, region: f.insetBy(dx: -6, dy: -6))
         }
+        if !a.contains("--window") { try keepFront(.look) }
         if let i = a.firstIndex(of: "--region") {
             let x = try number(a[safe: i + 1], "x"), y = try number(a[safe: i + 2], "y")
             let w = try number(a[safe: i + 3], "width"), h = try number(a[safe: i + 4], "height")
@@ -263,6 +264,7 @@ func perform(_ args: [String]) throws -> String {
         case "minimize", "minimise":
             return try acting { try set(kAXMinimizedAttribute, kCFBooleanTrue); return "minimized \(title)" }
         case "restore":
+            try waitIfTyping(for: owner?.processIdentifier)
             return try acting {
                 try set(kAXMinimizedAttribute, kCFBooleanFalse)
                 win.perform(kAXRaiseAction, timeout: 0.5)
@@ -296,6 +298,7 @@ func perform(_ args: [String]) throws -> String {
             pause(80)
             return "maximized \(title)" + where_()
         case "close":
+            try waitIfTyping(for: owner?.processIdentifier)
             return try acting {
                 // Cmd+W on the window brought to the front is what every app honours;
                 // pressing the red button through accessibility is only the fallback
@@ -350,6 +353,7 @@ func perform(_ args: [String]) throws -> String {
            NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
             return "\"\(win.text(kAXTitleAttribute))\" is already in front"
         }
+        try waitIfTyping(for: app.processIdentifier)
         return try acting {
             if (win.attr(kAXMinimizedAttribute) as? Bool) == true {
                 AXUIElementSetAttributeValue(win, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
@@ -602,6 +606,7 @@ func perform(_ args: [String]) throws -> String {
         guard let url = a.first, url.hasPrefix("http://") || url.hasPrefix("https://") else {
             throw Fail(message: "open takes http(s) URLs only", code: 2)
         }
+        try waitIfTyping()
         return try acting {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/open")

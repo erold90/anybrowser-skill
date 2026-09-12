@@ -79,7 +79,9 @@ var readingApp: pid_t? = nil
 /// Said before the command's own report: the app was read from behind, or brought back.
 var frontNote: String? = nil
 
-enum FrontUse { case read, act }
+/// read: the accessibility tree, which an app behind others still gives · look: pixels
+/// (a screenshot), which need it in front · act: input.
+enum FrontUse { case read, look, act }
 
 /// Before a command that reads or acts on the app in front. An @ref among `args`
 /// names its own app.
@@ -97,7 +99,7 @@ func keepFront(_ use: FrontUse, _ args: [String] = []) throws {
     let ref = args.first(where: isRef).flatMap(refPid).flatMap { NSRunningApplication(processIdentifier: $0) != nil ? $0 : nil }
     let host = isHost(front)
     guard let want = ref ?? work else {
-        if host { throw Fail(message: hostMessage(front)) }
+        if host && use != .look { throw Fail(message: hostMessage(front)) }
         return
     }
     if want == front { return }
@@ -106,11 +108,17 @@ func keepFront(_ use: FrontUse, _ args: [String] = []) throws {
     let wanted = appName(want), other = appName(front)
     // The terminal is where the user talks to the agent; any other app they bring forward is their own work.
     let theirs = !host && front != work
-    if use == .read {
+    switch use {
+    case .read:
         readingApp = want
         frontNote = theirs ? "(reading \(wanted), where the work is — \(other) is in front now: focus \(other) to read that instead)"
                            : "(reading \(wanted) — \(other) is in front)"
         return
+    case .look where theirs:
+        frontNote = "(\(other) is in front, not \(wanted) where the work is)"      // a picture of it harms nobody
+        return
+    default:
+        break
     }
     if theirs {
         throw Fail(message: "\(other) is in front now, not \(wanted) where anybrowser was working — someone brought it forward, so nothing was done. "
@@ -155,6 +163,14 @@ func waitForTyping(in app: String, then wanted: String) throws -> Double {
         }
         pause(200)
     }
+}
+
+/// Before any command takes the front (focus, menu, go, raise…): if the user is typing
+/// in the terminal the agent runs in, let them finish, or their next keys go to the app.
+func waitIfTyping(for target: pid_t? = nil) throws {
+    guard let front = focusedApp(timeout: 0.5)?.pid, isHost(front), front != target else { return }
+    let waited = try waitForTyping(in: appName(front), then: target.map(appName) ?? "the app coming forward")
+    if waited >= 1 { frontNote = "(waited \(Int(waited)) s for the typing in \(appName(front)) to stop before taking the front)" }
 }
 
 func bringBack(_ pid: pid_t) -> Bool {

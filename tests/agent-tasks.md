@@ -44,3 +44,18 @@ In a scratch folder holding `bozza.txt`, `note.txt`, `foto.png.txt`:
 6. Close the window.
 
 History: 6/6 in 13 calls.
+
+## 4. Real sites and a settings pane (Safari, System Settings)
+
+Nothing local: pages the tests never saw. Each in a window of the agent's own.
+
+1. it.wikipedia.org: search `Lecce` with the page's own field, open the city's article,
+   report the population and its date from the infobox, count the links with "Salento"
+   in their text or address, go back and say which page that is.
+2. httpbin.org/forms/post (echoes the form back): name, telephone, e-mail, pizza size
+   (radio), two toppings (checkboxes), delivery time, comments; submit; verify every
+   value in the echoed page; close only the windows opened.
+3. System Settings, read-only: General › About — macOS version and model name; quit.
+
+The agent starts with its own terminal in front and may be typed in meanwhile: this
+round also shows whether the tool's messages about the app in front are enough.

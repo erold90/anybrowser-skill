@@ -82,6 +82,10 @@ still in front before touching anything, because the user shares the Mac:
 | another app someone brought forward | still read the app worked on, and say so | stop with `nothing was done` — `focus` the one you mean |
 | nothing worked on yet, and the terminal | refuse: nothing is ever done in the terminal | refuse |
 
+Whatever takes the front from the terminal — an action, `focus`, `go`, `menu`, `shot` — first
+waits for the user to stop typing there, so none of their keys lands in the app
+(`(waited 4 s for the typing in Ghostty to stop …)`).
+
 So **start with the app**: `focus TextEdit`, `go example.com`, `menu Finder File "New Folder"`.
 An app opened any other way (`open -a`, a script) becomes the one worked on once you `focus` it;
 so does the terminal, if that is really the task. `expect`, `waitfor` and `waitgone` name the

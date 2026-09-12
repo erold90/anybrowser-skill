@@ -253,7 +253,7 @@ func frontTree(stop: ((Node) -> Bool)? = nil, visibleOnly: Bool = false) throws 
     guard AXIsProcessTrusted() else { throw Fail(message: "reading the screen needs the Accessibility permission — run: anybrowser check") }
     guard let app = focusedApp() else { throw Fail(message: "the frontmost app has no window") }
     guard let win = app.element(kAXFocusedWindowAttribute) ?? app.element(kAXMainWindowAttribute) else {
-        throw Fail(message: "the frontmost app has no window")
+        throw Fail(message: "\(appName(app.pid)) has no window open")
     }
     var clip: CGRect? = nil
     if visibleOnly, let o = axPoint(win.attr(kAXPositionAttribute)), let sz = axSize(win.attr(kAXSizeAttribute)) {
@@ -1143,6 +1143,7 @@ func runningApp(_ name: String) -> NSRunningApplication? {
 }
 
 func activate(_ name: String) throws {
+    try waitIfTyping(for: runningApp(name)?.processIdentifier)
     if let app = runningApp(name) {
         app.activate(options: [.activateAllWindows])
     } else {
@@ -1323,7 +1324,7 @@ func choose(_ popup: Node, _ option: String) throws -> String {
     // wait on. Only when its browser is in front, so the keys can't land elsewhere.
     // Browsers join keys typed within a second into one search ("TeamPro"): let the
     // previous one expire first.
-    let typeAhead = NSTemporaryDirectory() + "anybrowser-typeahead"
+    let typeAhead = tempDir + "anybrowser-typeahead"
     if popup.inWeb, focusedApp(timeout: 0.3)?.pid == pid,
        AXUIElementSetAttributeValue(popup.el, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success,
        until(0.3, { (popup.el.attr(kAXFocusedAttribute) as? Bool) == true }) {
@@ -1389,7 +1390,7 @@ func shot(_ name: String, region: CGRect? = nil, display: Int? = nil) throws -> 
         out = name
     } else {
         guard !name.contains("/"), !name.hasPrefix(".") else { throw Fail(message: "shot takes a plain name or an absolute .png path", code: 2) }
-        let dir = ProcessInfo.processInfo.environment["ANYBROWSER_SHOTS"] ?? NSTemporaryDirectory()
+        let dir = ProcessInfo.processInfo.environment["ANYBROWSER_SHOTS"] ?? tempDir
         out = (dir as NSString).appendingPathComponent("\(name).png")
     }
     let raw = out + ".raw.png"

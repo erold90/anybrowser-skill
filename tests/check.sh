@@ -93,6 +93,7 @@ t "terminal in front: a do stops at once"      says "stopped at step 1 of 2" "${
 t "terminal in front: bad arguments said first" says "unknown modifier" "${HOST[@]}" "$M" hotkey "cmd banana" s
 t "another app took the front: an action stops" says "someone brought it forward, so nothing was done" "${STOP[@]}" "$M" key f19
 t "check says what it works in"                says "working in        Dock" "${STOP[@]}" "$M" check
+t "a screenshot says the work isn't in front"  says "is in front, not Dock where the work is" "${STOP[@]}" "$M" shot "$TMP/look.png"
 
 # Browser commands: validation that needs no browser window.
 t "go refuses javascript: addresses"    says "doesn't run javascript:" "$M" go "javascript:alert(1)"
