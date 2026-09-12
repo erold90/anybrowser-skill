@@ -546,7 +546,7 @@ func settleText(_ seconds: Double = 3) {
 /// its web area is replaced (a reload builds a new one), or loading visibly starts.
 /// `scripted` is the address the script saw, for when accessibility had no page yet.
 func waitLoad(_ browser: NSRunningApplication, from mark: PageMark?, scripted: String? = nil, seconds: Double,
-              opening: Bool = false) -> (done: Bool, url: String, title: String) {
+              opening: Bool = false, stopOnDialog: Bool = false) -> (done: Bool, url: String, title: String) {
     let pid = browser.processIdentifier
     let app = AXUIElementCreateApplication(pid)
     AXUIElementSetMessagingTimeout(app, 1)
@@ -556,6 +556,10 @@ func waitLoad(_ browser: NSRunningApplication, from mark: PageMark?, scripted: S
     var woke = false
     let markTitle = mark.flatMap { m in m.web.flatMap { w in m.window.map { pageTitle(w, $0) } } }
     while now() - start < seconds {
+        // A click that starts a download shows a permission dialog instead of loading a page.
+        if stopOnDialog, let win = app.element(kAXFocusedWindowAttribute), looksLikeDialog(win, kind: "") {
+            return (false, "__dialog__", "")
+        }
         if let win = app.element(kAXFocusedWindowAttribute) ?? app.element(kAXMainWindowAttribute) {
             if !woke { woke = true; wakeWebTree(app, pid: pid) }
             let pending = safariLoading(win)

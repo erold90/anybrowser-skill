@@ -250,7 +250,7 @@ let pageScript = #"""
     title: document.title, lang: document.documentElement.lang || null, doctype: !!document.doctype,
     description: meta('description'), robots: meta('robots'), viewport: meta('viewport'),
     canonical: document.querySelector('link[rel="canonical"]')?.href ?? null,
-    icon: !!document.querySelector('link[rel~="icon"]'),
+    icon: !!document.querySelector('link[rel~="icon"], link[rel~="shortcut"], link[rel*="apple-touch-icon" i], link[rel*="mask-icon" i]'),
     ogTitle: prop('og:title'), ogImage: prop('og:image'),
     structured: all('script[type="application/ld+json"]').length,
     h1: all('h1').map(h => h.textContent.trim().replace(/\s+/g, ' ').slice(0, 80)),
@@ -422,7 +422,16 @@ func pdfCommand(_ a: [String]) throws -> String {
     let printed = try cdp.send("Page.printToPDF", ["printBackground": true, "preferCSSPageSize": true], session: session, timeout: 60)
     guard let data = Data(base64Encoded: printed.str("data")), !data.isEmpty else { throw Fail(message: "the browser gave no PDF") }
     try data.write(to: URL(fileURLWithPath: out))
-    return "saved \(address) as a PDF: \(out) (\(size(Double(data.count))), \(String(format: "%.1f", now() - started)) s)"
+    let pages = pdfPageCount(data)
+    return "saved \(address) as a PDF: \(out) (\(size(Double(data.count)))\(pages > 0 ? ", \(pages) page\(pages == 1 ? "" : "s")" : ""), \(String(format: "%.1f", now() - started)) s)"
+}
+
+/// How many pages the PDF has: one `/Type /Page` object per page (not `/Type /Pages`, the tree nodes).
+/// `file` guesses this wrong on headless-Chrome PDFs, so count it here.
+func pdfPageCount(_ data: Data) -> Int {
+    let text = String(decoding: data, as: UTF8.self)
+    let re = try! NSRegularExpression(pattern: #"/Type\s*/Page(?![sA-Za-z])"#)
+    return re.numberOfMatches(in: text, range: NSRange(text.startIndex..., in: text))
 }
 
 func auditPage(_ cdp: CDP, session: String, url: String, wait: Double, a11y: Bool = false) -> PageReport {
@@ -675,13 +684,34 @@ func collect(_ events: [CDPEvent], _ extraIssues: [[String: Any]], hidden: Set<I
         for d in worst where !selectors.contains(d.str("violatingNodeSelector")) { selectors.append(d.str("violatingNodeSelector")) }
         let head = String(format: "LowTextContrast: %d element%@, worst %.2f where %.1f is needed — ", selectors.count, selectors.count == 1 ? "" : "s",
                           worst[0].num("contrastRatio"), worst[0].num("thresholdAA"))
-        r.warnings.append(Finding(kind: "issue", text: head + selectors.prefix(6).joined(separator: ", ") + (selectors.count > 6 ? "…" : "")))
+        // A ratio at or near 1.0 is almost always text over an image or a gradient, which Chrome
+        // reads as one flat colour: say so, so it isn't taken as a real 1:1 failure.
+        let tail = worst[0].num("contrastRatio") <= 1.05 ? "  (a ratio near 1.0 is usually text over an image Chrome can't read — look at it)" : ""
+        r.warnings.append(Finding(kind: "issue", text: head + selectors.prefix(6).joined(separator: ", ") + (selectors.count > 6 ? "…" : "") + tail))
     }
+    // Cookie changes the browser is rolling out for everyone (SameSite default, third-party phase-out)
+    // aren't the site's to fix and often can't be: count them once, apart from real errors.
+    var deprecations = 0
     for issue in issues where issue.dict("details").dict("lowTextContrastIssueDetails").isEmpty {
+        if isCookieDeprecation(issue) { deprecations += 1; continue }
         let (finding, breaks) = issueFinding(issue, base: page)
         guard seenIssues.insert(finding.text).inserted else { continue }
         if breaks { r.errors.append(finding) } else { r.warnings.append(finding) }
     }
+    if deprecations > 0 {
+        r.warnings.append(Finding(kind: "deprecation", text: "\(deprecations) cookie deprecation notice\(deprecations == 1 ? "" : "s") "
+            + "(SameSite / third-party phase-out) — browser-wide, usually not the site's to fix"))
+    }
+}
+
+/// A cookie issue that is only a browser-wide deprecation warning, not a real block.
+func isCookieDeprecation(_ issue: [String: Any]) -> Bool {
+    guard issue.str("code") == "CookieIssue" || issue.str("code") == "Cookie" else { return false }
+    let d = issue.dict("details").dict("cookieIssueDetails")
+    let reasons = ((d["cookieExclusionReasons"] as? [String] ?? []) + (d["cookieWarningReasons"] as? [String] ?? [])).map { $0.lowercased() }
+    guard !reasons.isEmpty else { return false }
+    // Every reason is a deprecation one (SameSite default, third-party phase-out); nothing harder.
+    return reasons.allSatisfy { $0.contains("samesite") || $0.contains("thirdparty") || $0.contains("phaseout") }
 }
 
 // MARK: - Addresses and sizes
@@ -890,6 +920,10 @@ func runAudit(_ o: AuditOptions, note: String) throws -> String {
     // Files that must never answer 200: they leak secrets or source. Only for a site the user owns.
     if !pages.isEmpty, pages[0].failure == nil {
         for finding in exposedFiles(pages[0].address, agent: agent) { pages[0].errors.append(finding) }
+        // No <link rel=icon> is fine if the browser's fallback /favicon.ico answers.
+        if pages[0].info["icon"] as? Bool == false, faviconFallback(pages[0].address, agent: agent) {
+            pages[0].info["icon"] = true
+        }
     }
     let browser = chrome.browser
     let seconds = now() - started
@@ -989,6 +1023,23 @@ func searchLine(_ address: String, agent: String) -> String {
     let missing = get(origin + "/anybrowser-no-such-page-\(Int(now()))")
     if missing.status == 200 { parts.append("missing pages answer 200 instead of 404 (a soft 404: add a 404 page)") }
     return parts.joined(separator: " · ")
+}
+
+/// Does the browser's default /favicon.ico answer 200 with an image? Then a missing <link> is fine.
+func faviconFallback(_ address: String, agent: String) -> Bool {
+    guard let url = URL(string: address), let scheme = url.scheme, let host = url.host,
+          let target = URL(string: "\(scheme)://\(host)" + (url.port.map { ":\($0)" } ?? "") + "/favicon.ico") else { return false }
+    var request = URLRequest(url: target, timeoutInterval: 8)
+    request.setValue(agent, forHTTPHeaderField: "User-Agent")
+    let done = DispatchSemaphore(value: 0)
+    var ok = false
+    URLSession.shared.dataTask(with: request) { data, response, _ in
+        let type = ((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+        ok = (response as? HTTPURLResponse)?.statusCode == 200 && (data?.count ?? 0) > 0 && !type.contains("html")
+        done.signal()
+    }.resume()
+    _ = done.wait(timeout: .now() + 10)
+    return ok
 }
 
 /// Sensitive files that must not be public. A body that looks the wrong kind (a site that answers

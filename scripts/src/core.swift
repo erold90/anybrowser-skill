@@ -615,7 +615,7 @@ func dialogSummary(_ container: AXUIElement) -> String? {
     visit(container, 0)
     debug("dialogSummary: visited \(visited) tooBig \(tooBig) buttons \(buttons) texts \(texts.prefix(3))")
     guard !tooBig, (1...4).contains(buttons.count), !texts.isEmpty else { return nil }
-    let words = String(texts.joined(separator: " — ").prefix(120))
+    let words = clip(texts.joined(separator: " — "), 240)
     return "dialog: \"\(words)\" — buttons: \(buttons.joined(separator: ", "))"
 }
 
@@ -955,8 +955,11 @@ func acting(mayNavigate: Bool = false, link: Bool = false, _ body: () throws -> 
                 moved = "address: \(currentURL(app) ?? "") (same page, changed in place)"
             } else {
                 let t0 = now()
-                let r = waitLoad(app, from: m, seconds: 12)
-                loaded = loadedReport("loaded", r, t0).replacingOccurrences(of: "; waitload waits longer", with: " — waitload waits longer")
+                // On a click, a download shows a permission dialog rather than loading: stop for it.
+                let r = waitLoad(app, from: m, seconds: 12, stopOnDialog: mayNavigate)
+                if r.url != "__dialog__" {
+                    loaded = loadedReport("loaded", r, t0).replacingOccurrences(of: "; waitload waits longer", with: " — waitload waits longer")
+                }
             }
             after = Snap.take()
         }

@@ -129,6 +129,15 @@ Traps met along the way:
   the user's browser before calling it broken.
 - **One visit.** The numbers are one load, on this Mac's connection. Run it twice before quoting a
   speed. `--slow` stands in for a phone on a bad network.
+- **Counts drift between visits.** A cookie banner, a fundraising or campaign banner, an A/B test or a
+  rotating ad brings its own errors, warnings and a11y findings, so two runs of the same page can differ
+  (a Wikipedia mobile run swung between 2 and 4 a11y findings on its fundraising banner). Cookie
+  *deprecation* notices (SameSite, third-party phase-out) are already grouped into one `deprecation`
+  line, apart from real errors — they're browser-wide and usually not the site's to fix. Treat a small
+  `--save` delta as noise unless the finding names something you changed.
+- **A contrast ratio near 1.0** is almost always text over an image or a gradient, which Chrome reads
+  as one flat colour — the line says so. Look at the element before reporting it; `--a11y`'s
+  `color-contrast` rule skips those.
 - **Lighthouse scores.** Not what `audit` gives. When the user wants the 0–100 scores for a
   report, run Lighthouse itself (`npx lighthouse <url>`). It isn't installed here, and it loads
   the page several times.

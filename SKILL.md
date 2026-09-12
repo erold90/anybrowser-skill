@@ -66,8 +66,10 @@ the rule holds anyway).
 ## Downloads and PDF
 
 - `waitdownload [secs]` after clicking a download waits for the file to finish and reports it with its
-  size and where it came from. A browser asking where to save, or whether to allow it, is a dialog —
-  answer it first.
+  size and where it came from. It watches the browser's download folder — Chrome's own setting, else
+  `~/Downloads` (Safari) — and can't be pointed elsewhere. A browser asking where to save, or whether
+  to allow the download, is reported as a `dialog:` — answer it (`click Consenti` / `key return`) first,
+  then `waitdownload`. Clicking a direct download link no longer waits out the page-load timeout.
 - `pdf [address] [--out file.pdf] [--profile]` prints a page to PDF from a headless browser — a public
   page, or one behind a login with `--profile` (see the audit section).
 
