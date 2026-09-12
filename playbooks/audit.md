@@ -13,6 +13,21 @@ Measured on 12/09/2026 on this Mac (MacBook Pro 2018, Chromium 146), browser sta
 | codename.cc, `--crawl 5` (2 pages found) and `--links` | 6.0 s |
 | danielelore.com, `--mobile --slow` | 3.4 s |
 
+## The options that go deeper
+
+- **`--a11y`** runs **axe-core** (Deque's engine, the one behind most accessibility tools) inside the
+  page: about 90 WCAG rules, each violation with its element and impact (critical/serious/moderate/minor).
+  It adds ~1 s. The plain audit already flags contrast, missing labels and nameless buttons; `--a11y`
+  adds the rest (ARIA misuse, heading order, landmarks, name-role-value, and so on). Run it for a real
+  accessibility report; skip it for a quick check.
+- **`--save`** records the run for that address and, from the second time on, prints a `change` line:
+  what got better or worse (errors, warnings, a11y) per page. Good before and after a fix, and for a
+  weekly check that tells you if a live site has regressed.
+- **`--fullshot file.png`** captures the whole page top to bottom, not just the first screen.
+- The plain audit now also reports, in `errors` and `to fix`: **exposed files** (`/.env`,
+  `/.git/config`, config backups that answer 200 with real content), **oversized images** (source
+  pixels far larger than the box they're shown in), and **structured data that isn't valid JSON**.
+
 ## The order of work
 
 1. **Overview**: `audit https://site --crawl 20 --links`. It gives one line per page, then errors and
@@ -54,6 +69,10 @@ hardening (headers, cookies). Quote the finding lines as they are; they're alrea
 | `search   no robots.txt · no sitemap` | search engines get no map of the site | add `/robots.txt` naming `Sitemap: https://site/sitemap.xml`, and the sitemap itself |
 | `search   robots.txt BLOCKS every search engine from every page` | a `Disallow: /` left from development | remove it, unless the site really must stay out of search |
 | `search   … missing pages answer 200 instead of 404 (a soft 404: add a 404 page)` | Cloudflare Pages without a `404.html` answers every address with the home page (found on all three of the user's sites) | add a short `404.html` with a link home |
+| `exposed  /.env is public — environment file with secrets` | a secrets file, a `.git` folder or a config backup is served to anyone | remove it from what's deployed; rotate any secret that was in it |
+| `<factor>× oversized image: /hero.jpg 4000×3000→400×300` | the file is far bigger than it's shown, so phones waste data | export it near the display size (times the screen density), then WebP/AVIF |
+| `a11y  serious  label: Form elements must have labels — 3 elements` (with `--a11y`) | axe-core's WCAG rules; the kind and the element are in the line | fix per the rule id (`label`, `color-contrast`, `aria-*`, `heading-order`…); deque.com/rules has each |
+| `<n> structured-data blocks isn't valid JSON` | a JSON-LD block has a syntax error, so search engines drop it | fix the JSON (a trailing comma, a smart quote) |
 | `issue GenericIssue: FormLabelForNameError` and similar | form fields Chrome can't tie to a label | a `<label for>` or `aria-label` |
 | `LCP 3.2 s (slow)` | the largest image or text block comes late | preload the hero image, serve it smaller, avoid render-blocking CSS and JS |
 | `CLS 0.16 (high)` | things move while loading | give images, embeds and ads a width and height (or `aspect-ratio`) |
