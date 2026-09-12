@@ -26,6 +26,11 @@ BROWSER  (the browser in front, or the one named with: use <browser>)
   downloads [n]            newest downloads, with where each came from
   settings [text]          open the browser's settings (Chrome: searched; Safari: that pane)
 
+AUDIT  (a headless Chrome of its own — nothing on screen, nothing changed in your browser)
+  audit [address] [--links [all]] [--crawl N] [--mobile] [--slow] [--shot file.png] [--json] [--profile]
+                           console errors, failed requests, Chrome's Issues, speed, weight, page and security checks
+  audit signin <address>   a window with the audit profile, for the user to sign in; then audit --profile
+
 LOOK
   shot [name] [--window | --element <name|@ref> | --region X Y W H | --display N] [--zoom 2]
                            capture, scaled so pixels = points (origin given if not 0,0)
@@ -1024,6 +1029,9 @@ func perform(_ args: [String]) throws -> String {
 
     case "settings":
         return try settingsReport(try targetBrowser(), search: a.joined(separator: " "))
+
+    case "audit":
+        return try auditCommand(a)
 
     case "readinglist":
         let browser = try targetBrowser()

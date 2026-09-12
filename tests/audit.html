@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8"><title>audit test page</title></head>
+<body>
+<h1>audit test</h1>
+<h1>a second h1</h1>
+<img src="missing.png">
+<form><input id="query" name="query"><button></button></form>
+<p><a href="page.html">the other test page</a> · <a href="nowhere.html">a broken link</a></p>
+<script>
+// Everything wrong here is on purpose: tests/check.sh expects each of these in the audit.
+console.error('audit: deliberate console error');
+console.warn('audit: deliberate warning');
+fetch('http://127.0.0.1:9/nothing').catch(() => {});
+setTimeout(() => { deliberatelyUndefined(); }, 30);
+</script>
+</body></html>

@@ -108,5 +108,27 @@ t "a ref needs a listing first"         says "refs come from the last" "$M" clic
 t "expect fails when the text is absent" says "expected" "$M" expect "$ABSENT" 0.3
 t "shot --element needs a target"       says "needs a name or a ref" "$M" shot x --element
 
+# Audits: a headless browser of its own, nothing on screen. tests/audit.html is wrong on purpose.
+t "audit refuses unknown options"         says "unknown audit option" "$M" audit http://127.0.0.1 --wibble
+if ls /Applications/Chromium.app /Applications/Google\ Chrome.app >/dev/null 2>&1; then
+  python3 -m http.server 8766 --bind 127.0.0.1 --directory "$HERE/tests" >/dev/null 2>&1 &
+  AUDIT_SERVER=$!
+  sleep 1
+  AUDIT=$("$M" audit http://127.0.0.1:8766/audit.html --links 2>&1)
+  has() { grep -Eq -- "$1" <<<"$AUDIT"; }
+  t "audit: console errors, with the line"  has "console +audit: deliberate console error — /audit.html:10"
+  t "audit: uncaught exceptions"            has "exception +ReferenceError: deliberatelyUndefined"
+  t "audit: 404s"                           has "404 +/missing.png \(Image\)"
+  t "audit: failed requests"                has "failed +http://127.0.0.1:9/nothing"
+  t "audit: console warnings"               has "console +audit: deliberate warning"
+  t "audit: page problems"                  has "no meta description.*2 h1.*1 image without alt.*1 field without a label.*1 button without a name"
+  t "audit: speed"                          has "^speed +TTFB [0-9]+ ms"
+  t "audit: broken links, and where"        has "404 +/nowhere.html +\(on /audit.html\)"
+  t "audit: JSON with everything"           bash -c "\"$M\" audit http://127.0.0.1:8766/audit.html --json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"pages\"][0][\"errors\"] and d[\"pages\"][0][\"requests\"]'"
+  kill "$AUDIT_SERVER" 2>/dev/null; wait "$AUDIT_SERVER" 2>/dev/null
+else
+  echo "skip  audit: no Chromium or Chrome installed"
+fi
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

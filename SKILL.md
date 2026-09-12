@@ -1,6 +1,6 @@
 ---
 name: anybrowser
-description: Drive the user's real browser on macOS — Safari, Chrome, Brave, Edge, Arc, Chromium — with no extension to install or connect, and any other Mac app too. Open sites, switch and close tabs, read whole pages and their links, fill and submit forms, pass alerts and native file pickers, and get history, bookmarks, downloads and settings. Use it for any task in a browser or on a web page (it works whether or not a browser extension is connected), and for native apps without a CLI (Finder, System Settings, installers). Not for what a plain HTTP request or shell command already does.
+description: Drive the user's real browser on macOS — Safari, Chrome, Brave, Edge, Arc, Chromium — with no extension to install or connect, and any other Mac app too. Open sites, switch and close tabs, read whole pages and their links, fill and submit forms, pass alerts and native file pickers, and get history, bookmarks, downloads and settings; audit sites for errors, speed, SEO, accessibility and security with DevTools data from a headless Chrome. Use it for any task in a browser or on a web page (it works whether or not a browser extension is connected), and for native apps without a CLI (Finder, System Settings, installers). Not for what a plain HTTP request or shell command already does.
 ---
 
 # anybrowser
@@ -154,9 +154,39 @@ use it when the user is working on the same Mac.
 - **Throwaway browser profiles**: use Chromium, not a second Chrome — scripting
   addresses a browser by its app id, and two Chromes share one.
 
+## Technical audits
+
+To find what is broken or slow on a site — the user's own, above all — don't open DevTools
+and read its panels. `audit` takes the same data from Chrome's DevTools Protocol, in a
+headless Chromium of its own: nothing on screen, nothing changed in the user's browser.
+
+```
+anybrowser.sh audit https://example.com                       # one page, ~2.5 s with the browser's start
+anybrowser.sh audit https://example.com --crawl 20 --links    # up to 20 pages of the site, every internal link checked
+anybrowser.sh audit example.com --mobile --slow               # a phone on slow 4G, CPU four times slower
+anybrowser.sh audit                                           # the page in front, visited afresh
+```
+
+| Line | What it holds |
+|---|---|
+| `errors` | console errors and uncaught exceptions with file:line, 4xx/5xx and failed requests, mixed content, Chrome Issues that break something (CORS, CSP, blocked cookies) |
+| `warnings` | console warnings, servers slower than 1 s, heavy files, text sent uncompressed, other Issues (low contrast with its selector, forms, deprecations) |
+| `page` · `to fix` | title, description, lang, canonical, h1, viewport, Open Graph, structured data · images without alt, fields without a label, nameless buttons, duplicate ids |
+| `speed` | TTFB, FCP, LCP, CLS — marked slow or poor past Google's thresholds — load, long tasks, elements, JS heap |
+| `weight` | requests and bytes by kind, the other hosts it loads from |
+| `security` | TLS and the certificate's days left, missing security headers, a server telling its version, cookie flags (never values) |
+| `links` | with `--links`: broken ones and the pages linking to them; `--links all` checks other sites' too |
+
+`--json` has everything, every request with its status, size and wait; `--shot /abs/page.png`
+a picture. Behind a login: `audit signin <address>` opens the audit profile in a window, **the
+user** signs in and quits that browser, and `audit <address> --profile` is signed in from then on.
+How to run a whole audit and what each finding usually means: `playbooks/audit.md`.
+
 ## Playbooks
 
 Read the one that fits before starting — names, recipes and traps already met:
+
+- `playbooks/audit.md` — auditing a site: the order of work, reading the findings, the usual fixes
 
 - `playbooks/safari.md` — toolbar ids, menus, settings panes, history and bookmarks without Full Disk Access
 - `playbooks/chrome.md` — Chrome and Chromium: profiles, files, settings pages, alerts, bookmarks
@@ -209,6 +239,7 @@ ACT     click|dclick|rclick X Y|<name>|@ref · press <name> · fill <field> "tex
         menu <app> <menu> [<submenu>...] <item> · focus <app> · quit <app> · raise <title> · open <url> [app]
         window minimize|restore|maximize|fullscreen|close [title] · window move X Y [title] · window resize W H [title]
         hover X Y|<name> · move X Y · drag X1 Y1 X2 Y2|<name> <name> · scroll N [dx]
+AUDIT   audit [address] [--links [all]] [--crawl N] [--mobile] [--slow] [--wait S] [--shot file.png] [--json] [--profile] · audit signin <address>
 CHAIN   do "<cmd>" "<cmd>" ...  ·  do -   (steps from stdin)
 CHECK   check · version
 ```
