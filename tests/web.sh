@@ -17,6 +17,8 @@ URL2="http://127.0.0.1:$PORT/page.html?second=$V"
 re() { printf '%s' "$1" | sed 's/[.?]/\\&/g'; }          # an address as a literal in a pattern
 TMP="$(mktemp -d)"
 FILE="$TMP/logo.txt"; echo test > "$FILE"
+# The app being worked on, refs and the windows opened are remembered in TMPDIR: keep the tests' apart.
+export TMPDIR="$TMP/state/"; mkdir -p "$TMPDIR" "$TMP/fresh"
 pass=0; fail=0
 
 python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$HERE/tests" >/dev/null 2>&1 &
@@ -89,7 +91,7 @@ commands() {
   t "$browser: reload reloads"              "reloaded \"anybrowser test\"" "$out"
   t "$browser: text has the page, line by line" "^    Name$" "$out"
   t "$browser: refs click the listed element" "clicked Send  \[Button\]" "$out"
-  t "$browser: expect passes"               "ok: \"status: sent\"" "$out"
+  t "$browser: expect passes, saying where" "ok: \"status: sent\" is on the page in $browser" "$out"
   t "$browser: tabs lists the page"         "anybrowser test — $(re "$URL2")" "$out"
 }
 
@@ -98,6 +100,24 @@ ANYBROWSER_BROWSER=safari "$M" tab new "$URL" --window >/dev/null
 export ANYBROWSER_BROWSER=safari
 flow Safari
 commands Safari
+
+# The user brings forward the terminal these tests run in, as when typing to the agent.
+HOST_APP=$("$M" check 2>/dev/null | sed -n 's/^runs in  *\(.*\) — never acted on.*/\1/p')
+if [ -n "$HOST_APP" ]; then
+  open -a "$HOST_APP"; sleep 1
+  out=$("$M" expect "anybrowser test page" 2>&1)
+  t "Safari: a check reads the page from behind the terminal" "reading Safari — $HOST_APP is in front" "$out"
+  t "Safari: ... and says which app it read"  "is on the page in Safari" "$out"
+  open -a "$HOST_APP"; sleep 1
+  out=$("$M" click Target 2>&1)
+  t "Safari: an action brings the page back first" "brought Safari back to the front" "$out"
+  t "Safari: ... then acts there"             "clicked Target" "$out"
+  open -a "$HOST_APP"; sleep 1
+  out=$(TMPDIR="$TMP/fresh/" "$M" read 2>&1)
+  t "nothing worked on, terminal in front: nothing is done" "the app this command runs in" "$out"
+else
+  echo "skip  the terminal taking the front: no app found running these tests"
+fi
 out=$("$M" tabs --mine 2>&1)
 t "Safari: tabs --mine shows the test window" "opened by anybrowser" "$out"
 out=$("$M" tab close --mine 2>&1)
@@ -113,6 +133,7 @@ else APP=""; fi
 if [ -n "$APP" ]; then
   open -na "$APP" --args --user-data-dir="$TMP/profile" --no-first-run --no-default-browser-check --new-window "$URL"
   sleep 4
+  "$M" focus "$APP" >/dev/null               # opened from the shell: name it as the app worked on
   export ANYBROWSER_BROWSER=$NAME
   FIRST_STEP='click Target' flow "$APP"     # a click as the very first command must wake the page too
   commands "$APP"

@@ -112,6 +112,7 @@ func focusedApp(timeout: Float = 2) -> AXUIElement? {
         AXUIElementSetMessagingTimeout(app, timeout)
         return app
     }
+    if let pid = readingApp { return element(pid) }    // a lookup reading the work from behind another app
     CFRunLoopRunInMode(.defaultMode, 0, true)          // let NSWorkspace catch up on activations
     if let front = NSWorkspace.shared.frontmostApplication {
         let app = element(front.processIdentifier)
@@ -372,7 +373,14 @@ func pick(_ needle: String, fields: Bool = false, roles: Set<String>? = nil, nee
 /// survives the page re-rendering, and is gone when the element is.
 struct Ref: Codable { let pid: Int32; let role: String; let name: String; let dom: String; let x: Double; let y: Double; let web: Bool }
 
-let refsPath = NSTemporaryDirectory() + "anybrowser-refs.json"
+/// Where what lasts between calls is kept: TMPDIR, which NSTemporaryDirectory ignores
+/// (the tests keep theirs apart with it), else the user's temporary folder.
+let tempDir: String = {
+    guard let t = ProcessInfo.processInfo.environment["TMPDIR"], !t.isEmpty else { return NSTemporaryDirectory() }
+    return t.hasSuffix("/") ? t : t + "/"
+}()
+
+let refsPath = tempDir + "anybrowser-refs.json"
 
 func numbered(_ nodes: [Node], limit: Int, _ format: (Node) -> String) -> [String] {
     var refs: [Ref] = []
@@ -393,6 +401,13 @@ func numbered(_ nodes: [Node], limit: Int, _ format: (Node) -> String) -> [Strin
 }
 
 func isRef(_ s: String) -> Bool { s.hasPrefix("@") && Int(s.dropFirst()) != nil }
+
+/// The app a ref was listed in.
+func refPid(_ token: String) -> pid_t? {
+    guard let n = Int(token.dropFirst()), let data = FileManager.default.contents(atPath: refsPath),
+          let refs = try? JSONDecoder().decode([Ref].self, from: data), let ref = refs[safe: n - 1] else { return nil }
+    return ref.pid
+}
 
 func resolveRef(_ token: String) throws -> Node {
     guard let n = Int(token.dropFirst()), let data = FileManager.default.contents(atPath: refsPath),
@@ -585,7 +600,7 @@ func isWebApp(_ pid: pid_t) -> Bool {
 struct PageState { let web: AXUIElement; let text: String }
 
 func pageState() -> PageState? {
-    guard let app = focusedApp(timeout: 0.5), let win = app.element(kAXFocusedWindowAttribute),
+    guard let app = focusedApp(timeout: 0.5), let win = app.element(kAXFocusedWindowAttribute) ?? app.element(kAXMainWindowAttribute),
           let web = webArea(in: win), let text = pageText(web) else { return nil }
     return PageState(web: web, text: text)
 }
@@ -893,7 +908,9 @@ func pointer() -> CGPoint { CGEvent(source: nil)?.location ?? .zero }
 
 /// Set once anything is posted: events still in flight when the process exits are
 /// dropped by the window server — a lone "move" to a point never arrived.
-var postedEvents = false
+var postedEvents = false { didSet { if postedEvents { lastPostedAt = now() } } }
+/// When input was last sent: the system's idle clock can't tell it from the user's.
+var lastPostedAt = 0.0
 
 func post(_ type: CGEventType, _ p: CGPoint, _ button: CGMouseButton = .left, clicks: Int64 = 0) {
     guard let e = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: p, mouseButton: button) else { return }

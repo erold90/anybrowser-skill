@@ -57,6 +57,10 @@ ACT  (each one waits for the app to react and reports what changed)
   do "<cmd>" "<cmd>" ...   run a sequence in one call; stops at the first failure
   do -                     the same, one step per line from stdin
 
+  Lookups and actions stay on the app being worked on — the one the last command used. When another
+  app comes forward (the terminal you run in), lookups read the work from behind it and actions bring
+  it back first; nothing is done in the terminal itself unless you focus it.
+
   check                    permissions, and what each running browser allows
   version                  version, macOS and architecture — paste it into bug reports
 
@@ -71,7 +75,19 @@ func point(_ args: [String], _ i: Int) throws -> CGPoint {
 
 extension Array { subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil } }
 
+/// Every command, and every step of a do, passes here.
 func execute(_ args: [String]) throws -> String {
+    guard let cmd = args.first, cmd != "do" else { return try perform(args) }
+    readingApp = nil
+    frontNote = nil
+    defer { readingApp = nil }
+    let result = try perform(args)
+    rememberFront(cmd, Array(args.dropFirst()))
+    guard let note = frontNote else { return result }
+    return result.isEmpty ? note : note + "\n" + result
+}
+
+func perform(_ args: [String]) throws -> String {
     guard let cmd = args.first else { return usage }
     let a = Array(args.dropFirst())
 
@@ -108,6 +124,7 @@ func execute(_ args: [String]) throws -> String {
         if let i = a.firstIndex(of: "--element") {
             guard let target = a[safe: i + 1] else { throw Fail(message: "shot --element needs a name or a ref", code: 2) }
             try requireTrust("shot --element")
+            try keepFront(.act, [target])
             let node = try pick(target, needPoint: false)
             guard let f = frame(node.el), f.width > 0, f.height > 0 else { throw Fail(message: "\(label(node)) has no size on screen") }
             return try shot(name, region: f.insetBy(dx: -6, dy: -6))
@@ -119,6 +136,7 @@ func execute(_ args: [String]) throws -> String {
         }
         if a.contains("--window") {
             try requireTrust("shot --window")
+            try keepFront(.act)
             guard let win = focusedApp()?.element(kAXFocusedWindowAttribute), let f = frame(win) else {
                 throw Fail(message: "the frontmost app has no window")
             }
@@ -164,6 +182,9 @@ func execute(_ args: [String]) throws -> String {
         guard let action = a.first else {
             throw Fail(message: "window needs an action: minimize, restore, close, maximize, fullscreen, move X Y, resize W H", code: 2)
         }
+        guard ["minimize", "minimise", "restore", "maximize", "maximise", "close", "fullscreen", "move", "resize"].contains(action) else {
+            throw Fail(message: "unknown window action: \(action) — minimize, restore, close, maximize, fullscreen, move X Y, resize W H", code: 2)
+        }
         var rest = Array(a.dropFirst())
         var numbers: [Double] = []
         if action == "move" || action == "resize" {
@@ -177,6 +198,7 @@ func execute(_ args: [String]) throws -> String {
         // The window: by (part of) its title across apps, or the front one.
         var target: (NSRunningApplication?, AXUIElement)? = nil
         if wanted.isEmpty {
+            try keepFront(.act)
             if let app = focusedApp(), let w = app.element(kAXFocusedWindowAttribute) {
                 target = (NSRunningApplication(processIdentifier: app.pid), w)
             }
@@ -340,6 +362,7 @@ func execute(_ args: [String]) throws -> String {
 
     case "where":
         guard let needle = a.first, !needle.isEmpty else { throw Fail(message: "where needs the text to look for", code: 2) }
+        try keepFront(.read)
         let hits = rank(try frontTree(), needle)
         guard !hits.isEmpty else { throw Fail(message: "no element matching: \(needle)") }
         return numbered(hits, limit: 50, line).prefix(50).joined(separator: "\n")
@@ -347,9 +370,12 @@ func execute(_ args: [String]) throws -> String {
     case "waitfor":
         guard let needle = a.first, !needle.isEmpty else { throw Fail(message: "waitfor needs the text to look for", code: 2) }
         let secs = a.count > 1 ? try number(a[1], "seconds") : 10
+        try keepFront(.read)
         let deadline = now() + secs
         while true {
-            if let hits = try? rank(frontTree(), needle), !hits.isEmpty { return dedupe(hits.map(line)).prefix(10).joined(separator: "\n") }
+            if let hits = try? rank(frontTree(), needle), !hits.isEmpty {
+                return "found in \(frontName()): " + dedupe(hits.map(line)).prefix(10).joined(separator: "\n")
+            }
             if now() >= deadline { throw Fail(message: "not found after \(Int(secs))s: \(needle)") }
             // Wake on the app's own notifications rather than a fixed poll.
             Watch().settle(first: 300, quiet: 40, max: 600)
@@ -359,17 +385,20 @@ func execute(_ args: [String]) throws -> String {
         // expect <text> [secs]: a check inside a do — passes quietly, or stops the sequence.
         guard let needle = a.first, !needle.isEmpty else { throw Fail(message: "expect needs the text that should be there", code: 2) }
         let secs = a.count > 1 ? try number(a[1], "seconds") : 3
+        try keepFront(.read)
         let deadline = now() + secs
         while true {
+            // Saying where it was found: a check that passed in the wrong app is worse than one that failed.
             if let page = pageState(), page.text.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
-                return "ok: \"\(needle)\" is on the page"
+                return "ok: \"\(needle)\" is on the page in \(frontName())"
             }
-            if let hits = try? rank(frontTree(), needle), let first = hits.first { return "ok: \(label(first))" }
+            if let hits = try? rank(frontTree(), needle), let first = hits.first { return "ok: \(label(first)) in \(frontName())" }
             if now() >= deadline { throw Fail(message: "expected \"\(needle)\" — not there after \(Int(secs)) s") }
             Watch().settle(first: 250, quiet: 40, max: 500)
         }
 
     case "ui":
+        try keepFront(.read)
         var nodes = try frontTree(visibleOnly: !a.contains("--all"))
         if a.contains("--page") { nodes = nodes.filter { $0.inWeb } }            // the page, without the browser around it
         let lines = numbered(nodes, limit: 200, line)
@@ -378,6 +407,7 @@ func execute(_ args: [String]) throws -> String {
                                  : lines.joined(separator: "\n")
 
     case "read":
+        try keepFront(.read)
         let nodes = try frontTree(visibleOnly: !a.contains("--all"))
         let source = nodes.contains { $0.inWeb } ? nodes.filter { $0.inWeb } : nodes
         var lines: [String] = []
@@ -433,9 +463,11 @@ func execute(_ args: [String]) throws -> String {
         }
         if coords.count == 2, Double(coords[0]) != nil {
             let p = try point(coords, 0)
+            try keepFront(.act)
             return try acting(mayNavigate: button == .left) { click(p, button: button, count: count); return "" }
         }
         guard let needle = a.first else { throw Fail(message: "\(cmd) needs X Y or a name", code: 2) }
+        try keepFront(.act, [needle])
         let target = try pick(needle)
         if !target.reachable {
             // Never click a point that would land on something else.
@@ -458,6 +490,7 @@ func execute(_ args: [String]) throws -> String {
     case "press":
         try requireTrust("press")
         guard let needle = a.first else { throw Fail(message: "press needs a name", code: 2) }
+        try keepFront(.act, [needle])
         let target = try pick(needle, needPoint: false)
         return try acting(mayNavigate: target.inWeb) {
             let r = target.el.perform(kAXPressAction, timeout: 0.3)
@@ -468,6 +501,7 @@ func execute(_ args: [String]) throws -> String {
     case "select":
         try requireTrust("select")
         guard a.count == 2 else { throw Fail(message: "select needs a menu and an option: select \"Country\" \"Italy\"", code: 2) }
+        try keepFront(.act, [a[0]])
         let popup = try pick(a[0], roles: ["PopUpButton", "ComboBox", "MenuButton"], needPoint: false)
         // choose() reads the value back, so silence around it isn't doubt.
         return try acting { try choose(popup, a[1]) }
@@ -479,10 +513,11 @@ func execute(_ args: [String]) throws -> String {
         let secs = a.count > 1 ? try number(a[1], "seconds") : 10
         let deadline = now() + secs
         try requireUnlocked()
+        try keepFront(.read)
         while true {
             // No window at all means it isn't there either.
             let hits = rank((try? frontTree()) ?? [], needle)
-            if hits.isEmpty { return "gone: \(needle)" }
+            if hits.isEmpty { return "gone from \(frontName()): \(needle)" }
             if now() >= deadline { throw Fail(message: "still there after \(Int(secs))s: \(label(hits[0]))") }
             Watch().settle(first: 300, quiet: 40, max: 600)
         }
@@ -490,6 +525,7 @@ func execute(_ args: [String]) throws -> String {
     case "fill":
         try requireTrust("fill")
         guard a.count == 2 else { throw Fail(message: "fill needs a field name and the text: fill \"Email\" \"me@example.com\"", code: 2) }
+        try keepFront(.act, [a[0]])
         let field = try pick(a[0], fields: true)
         let want = a[1]
         // Letters and digits only: a field may format what it gets ("333 1234").
@@ -527,10 +563,12 @@ func execute(_ args: [String]) throws -> String {
 
     case "type":
         try requireTrust("type")
+        try keepFront(.act)
         return try acting { paste(a.first ?? ""); return "" }
 
     case "keys":
         try requireTrust("keys")
+        try keepFront(.act)
         return try acting { typeKeys(a.first ?? ""); return "" }
 
     case "key":
@@ -538,10 +576,14 @@ func execute(_ args: [String]) throws -> String {
         guard let name = a.first, let code = namedKeys[name.lowercased()] else {
             throw Fail(message: "unknown key: \(a.first ?? "") — keys: \(namedKeys.keys.sorted().joined(separator: " "))", code: 2)
         }
+        try keepFront(.act)
         return try acting(mayNavigate: code == 36 || code == 76) { tap(code); return "" }
 
     case "hotkey":
         try requireTrust("hotkey")
+        _ = try modifiers(a[safe: 0] ?? "")                 // wrong arguments are said first
+        guard !(a[safe: 1] ?? "").isEmpty else { throw Fail(message: "hotkey needs modifiers and a key, e.g. hotkey \"cmd shift\" s", code: 2) }
+        try keepFront(.act)
         let k = (a[safe: 1] ?? "").lowercased()
         return try acting(mayNavigate: ["return", "enter", "[", "]", "r"].contains(k)) { try hotkey(a[safe: 0] ?? "", a[safe: 1] ?? ""); return "" }
 
@@ -576,15 +618,18 @@ func execute(_ args: [String]) throws -> String {
         let full = (file as NSString).expandingTildeInPath
         let abs = full.hasPrefix("/") ? full : FileManager.default.currentDirectoryPath + "/" + full
         guard FileManager.default.fileExists(atPath: abs) else { throw Fail(message: "no such file: \(file)") }
+        try keepFront(.act)
         return try acting { try upload((abs as NSString).standardizingPath) }
 
     case "hover":
         try requireTrust("hover")
         if a.count == 2, Double(a[0]) != nil {
             let p = try point(a, 0)
+            try keepFront(.act)
             return try acting { glide(to: p); return "hovering at \(Int(p.x)) \(Int(p.y))" }
         }
         guard let needle = a.first else { throw Fail(message: "hover needs X Y or a name", code: 2) }
+        try keepFront(.act, [needle])
         let target = try pick(needle)
         guard target.reachable else { throw Fail(message: "\(label(target)) is covered or off screen — nothing to hover") }
         let report = try acting { glide(to: target.point!); return "hovering over \(label(target))" }
@@ -602,9 +647,11 @@ func execute(_ args: [String]) throws -> String {
         // drag X1 Y1 X2 Y2 · drag <name> <name> · either end may be "X Y" in one argument
         if a.count == 4, a.allSatisfy({ Double($0) != nil }) {
             let from = try point(a, 0), to = try point(a, 2)
+            try keepFront(.act)
             return try acting { drag(from, to); return "dragged \(Int(from.x)) \(Int(from.y)) → \(Int(to.x)) \(Int(to.y))" }
         }
         guard a.count == 2 else { throw Fail(message: "drag takes X1 Y1 X2 Y2, or two names: drag \"report.pdf\" \"Archive\"", code: 2) }
+        try keepFront(.act, a)
         func end(_ arg: String) throws -> (CGPoint, String, Node?) {
             let parts = arg.split(whereSeparator: { $0.isWhitespace })
             if parts.count == 2, let x = Double(parts[0]), let y = Double(parts[1]) { return (CGPoint(x: x, y: y), "\(Int(x)) \(Int(y))", nil) }
@@ -623,6 +670,7 @@ func execute(_ args: [String]) throws -> String {
     case "scroll":
         try requireTrust("scroll")
         let dy = Int32(try number(a.first, "lines")), dx = Int32(a.count > 1 ? try number(a[1], "dx") : 0)
+        try keepFront(.act)
         return try acting {
             // The wheel scrolls whatever is under the pointer: bring it over the front window first.
             if let win = focusedApp()?.element(kAXFocusedWindowAttribute), let f = frame(win), !f.contains(pointer()) {
@@ -1005,6 +1053,7 @@ func execute(_ args: [String]) throws -> String {
         case .some(false): lines.append("full disk access  ok — Safari history and bookmarks read from their files")
         case .none: break
         }
+        lines += workReport()
         return lines.joined(separator: "\n")
 
     case "do":
@@ -1069,7 +1118,7 @@ func tokenize(_ s: String) throws -> [String] {
 // MARK: - Main
 
 func finish(_ code: Int32) -> Never {
-    if postedEvents { pause(25) }                     // let the window server take delivery
+    if postedEvents { pause(25); notePosted() }       // let the window server take delivery
     exit(code)
 }
 

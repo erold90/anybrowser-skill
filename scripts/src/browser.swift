@@ -614,7 +614,7 @@ func tabList(_ browser: NSRunningApplication) throws -> [TabInfo] {
 
 /// Windows anybrowser opened (tab new --window, private), so a listing can say
 /// which are the agent's own and which are the user's.
-let openedPath = NSTemporaryDirectory() + "anybrowser-opened.json"
+let openedPath = tempDir + "anybrowser-opened.json"
 
 func openedWindows() -> Set<String> {
     guard let data = FileManager.default.contents(atPath: openedPath),

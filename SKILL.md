@@ -69,6 +69,24 @@ that already says what changed.
 
 Exit codes: `0` done, `1` failed or not found (the message says which), `2` bad arguments.
 
+## Which app a command works on
+
+Browser commands (`go`, `tabs`, `text`, `links`…) find their browser themselves. Lookups
+and actions (`where`, `expect`, `read`, `click`, `fill`, `keys`…) work on **the app being
+worked on** — the one the last command brought forward or acted in — and check it is
+still in front before touching anything, because the user shares the Mac:
+
+| In front instead | Lookups | Actions |
+|---|---|---|
+| the terminal you run in (the user typing to you) | read the app from behind it: `(reading Safari — Ghostty is in front)` | wait for the typing to stop, bring the app back, then act: `(brought Safari back to the front — Ghostty had taken it)` |
+| another app someone brought forward | still read the app worked on, and say so | stop with `nothing was done` — `focus` the one you mean |
+| nothing worked on yet, and the terminal | refuse: nothing is ever done in the terminal | refuse |
+
+So **start with the app**: `focus TextEdit`, `go example.com`, `menu Finder File "New Folder"`.
+An app opened any other way (`open -a`, a script) becomes the one worked on once you `focus` it;
+so does the terminal, if that is really the task. `expect`, `waitfor` and `waitgone` name the
+app they read — `ok: "Saved" is on the page in Safari` — and `check` shows `runs in` and `working in`.
+
 ## One call, many steps
 
 A tool call costs seconds; a step inside `do` costs milliseconds. Send what you
@@ -187,4 +205,5 @@ CHECK   check · version
 
 `find` kinds: link button field checkbox radio heading table image list landmark frame control focusable any.
 Environment: `ANYBROWSER_BROWSER=safari`; `ANYBROWSER_SETTLE=0` skips the reaction wait and report;
-`ANYBROWSER_GLIDE=0` makes the pointer jump; `ANYBROWSER_WAIT` is the lookup wait in seconds.
+`ANYBROWSER_GLIDE=0` makes the pointer jump; `ANYBROWSER_WAIT` is the lookup wait in seconds;
+`ANYBROWSER_HOST=Terminal` names the app you run in when `check` finds none (tmux, ssh).
