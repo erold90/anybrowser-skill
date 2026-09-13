@@ -270,6 +270,7 @@ func frontTree(stop: ((Node) -> Bool)? = nil, visibleOnly: Bool = false) throws 
     try requireUnlocked()
     guard AXIsProcessTrusted() else { throw Fail(message: "reading the screen needs the Accessibility permission — run: anybrowser check") }
     guard let app = focusedApp() else { throw Fail(message: "the frontmost app has no window") }
+    try refuseGecko(app.pid)               // reading a Firefox window stalls; say so, don't hang
     guard let win = app.element(kAXFocusedWindowAttribute) ?? app.element(kAXMainWindowAttribute) else {
         throw Fail(message: "\(appName(app.pid)) has no window open")
     }

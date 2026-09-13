@@ -60,9 +60,16 @@ func browserNamed(_ want: String) -> NSRunningApplication? {
 func targetBrowser() throws -> NSRunningApplication {
     if let want = chosenBrowser, !want.isEmpty {
         guard let app = browserNamed(want) else { throw Fail(message: "\(want) isn't running — start it with: focus \(want)") }
+        try refuseGecko(app.processIdentifier)
         return app
     }
-    guard let first = runningBrowsers().first else { throw Fail(message: "no browser is running — start one with: focus Safari") }
+    // The browser in front, or nearest the top — but never Firefox, which can't be driven.
+    guard let first = runningBrowsers().first(where: { !isGecko($0.processIdentifier) }) else {
+        if runningBrowsers().contains(where: { isGecko($0.processIdentifier) }) {
+            throw Fail(message: "only Firefox is running, which anybrowser can't drive — start Safari or a Chromium browser (Chrome, Brave, Edge)")
+        }
+        throw Fail(message: "no browser is running — start one with: focus Safari")
+    }
     return first
 }
 
@@ -284,9 +291,29 @@ func wakeWebTree(_ app: AXUIElement, pid: pid_t) -> Bool {
     return true
 }
 
+/// Gecko browsers (Firefox and its kin). anybrowser can't drive them: no scripting dictionary for
+/// tabs and addresses, and their accessibility engine, once woken, stalls reading the page (a plain
+/// `read` on a Firefox window hung for minutes, 12/9). Recognised only so the tool says so and stops,
+/// instead of hanging. Use Safari or a Chromium browser (Chrome, Brave, Edge).
+let geckoBundles = ["org.mozilla.firefox", "org.mozilla.nightly", "org.mozilla.firefoxdeveloperedition",
+                    "app.zen-browser.zen", "org.torproject.torbrowser"]
+
+func isGecko(_ pid: pid_t) -> Bool {
+    let bundle = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? ""
+    return geckoBundles.contains { bundle.hasPrefix($0) }
+}
+
+func refuseGecko(_ pid: pid_t) throws {
+    if isGecko(pid) {
+        throw Fail(message: "\(appName(pid)) can't be driven — Firefox has no scripting for tabs and addresses, and "
+            + "its accessibility stalls reading the page. Use Safari, or a Chromium browser (Chrome, Brave, Edge).")
+    }
+}
+
 /// The browser's front window — it needn't be the app in front.
 func browserWindow(_ browser: NSRunningApplication) throws -> (app: AXUIElement, window: AXUIElement) {
     try requireTrust("reading the page")
+    try refuseGecko(browser.processIdentifier)
     let app = AXUIElementCreateApplication(browser.processIdentifier)
     AXUIElementSetMessagingTimeout(app, 1)
     guard let win = app.element(kAXFocusedWindowAttribute) ?? app.element(kAXMainWindowAttribute) ?? realWindows(app).first else {
@@ -647,6 +674,7 @@ func bringToFront(_ browser: NSRunningApplication) {
 struct TabInfo { let window: String; let windowIndex: Int; let index: Int; let title: String; let url: String; let active: Bool; let mode: String }
 
 func tabList(_ browser: NSRunningApplication) throws -> [TabInfo] {
+    try refuseGecko(browser.processIdentifier)
     if family(browser) == .other {
         // No scripting: the tab bar of each window, titles only.
         let app = AXUIElementCreateApplication(browser.processIdentifier)

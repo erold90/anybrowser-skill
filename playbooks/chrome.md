@@ -1,8 +1,20 @@
 # Chrome, Chromium and the other Chromium browsers
 
-Verified on 11/09/2026 with Google Chrome 152 and Chromium 146 on macOS 15.7,
-Italian. Brave, Edge, Vivaldi and Opera share the scripting dictionary and the
-accessibility behaviour; they weren't run. Arc has its own dictionary: expect gaps.
+Verified on 11/09/2026 with Google Chrome 152 and Chromium 146, and on 13/09/2026
+with **Brave 1.95** and **Microsoft Edge 153**, on macOS 15.7, Italian.
+
+## Which browsers anybrowser drives
+
+| Browser | How | State |
+|---|---|---|
+| Safari | scripting + accessibility | full |
+| Chrome, Chromium | scripting + accessibility | full |
+| **Brave, Edge** | same as Chrome (Chromium scripting) | full — `fill`, `select`, `click`, `expect`, `go`, `back`, `tabs`, `url` all verified |
+| **Arc** | Chromium family | works **after** you finish Arc's onboarding once (a fresh Arc opens an account wall — anybrowser won't sign up; do it yourself, then `focus Arc` and drive it like Chrome) |
+| Vivaldi, Opera | Chromium family | not run, expected to work |
+| **Firefox** (and Gecko: Zen, Tor) | — | **not supported.** No scripting dictionary for tabs/addresses, and its accessibility engine stalls reading the page. anybrowser refuses fast with a message pointing to Safari or a Chromium browser, rather than hanging. |
+
+Name them by their short name: `focus brave`, `focus edge`, `use chrome`, `ANYBROWSER_BROWSER=edge`.
 
 ## What comes from where
 

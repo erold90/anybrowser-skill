@@ -74,6 +74,9 @@ the rule holds anyway).
   page, or one behind a login with `--profile` (see the audit section).
 
 The browser meant is the one in front, else the one whose window is highest.
+Safari, Chrome, Chromium, Brave and Edge are driven fully; Arc works once you've finished its
+onboarding; **Firefox and other Gecko browsers aren't supported** (no scripting, and their
+accessibility stalls) — the tool says so and points you to Safari or a Chromium browser.
 Name another with `ANYBROWSER_BROWSER=chrome anybrowser.sh …` for one call, or `use chrome`
 as a step of a `do` — it lasts until that `do` ends, not into the next call.
 Browser commands work on a browser in the background; `go`, `tab` and `private`

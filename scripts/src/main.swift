@@ -625,8 +625,12 @@ func perform(_ args: [String]) throws -> String {
         // Said, so an agent knows whether the app is its own to quit afterwards.
         let wasRunning = runningApp(app) != nil
         try activate(app)
-        // A window can follow its app by a second (System Settings).
-        let hasWindow = until(wasRunning ? 1 : 3) { focusedApp(timeout: 0.5)?.element(kAXFocusedWindowAttribute) != nil }
+        // A window can follow its app by a second (System Settings; a cold Chromium exposes its
+        // focused window a beat after launch). Accept the main window too, and wait a little longer cold.
+        let hasWindow = until(wasRunning ? 1.5 : 5) {
+            guard let f = focusedApp(timeout: 0.5) else { return false }
+            return f.element(kAXFocusedWindowAttribute) != nil || f.element(kAXMainWindowAttribute) != nil || !realWindows(f).isEmpty
+        }
         let head = wasRunning ? "focused \(app)" : "launched \(app) (it wasn't running)"
         return hasWindow ? head : "\(head) — it has no window open"
 
