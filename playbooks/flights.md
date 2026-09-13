@@ -64,6 +64,35 @@ scripts gives old or indicative prices. The browser shows what a traveller sees 
   - Plus already gives an exact price with 20 kg included.
 - In Safari a price is laid out in pieces (`€`, `19`, `,`, `99`); `text` joins them back into `€ 19,99`.
 
+## easyJet (easyjet.com/it)
+
+Verified 13/09/2026, signed out, in Safari. Loads clean, no wall.
+
+- **Cookies:** `Rifiuta tutto` [Button] (or `Accetta tutti i cookie`).
+- **Fields:** `Da` [TextField] (it prefills your nearest airport — held `Brindisi (BDS)`), `A` [TextField].
+  Both are React: `click` the field, then `keys "<city>"` — **not** `fill`.
+- **Suggestions are RadioButtons:** `Milano (Tutti gli aeroporti) Italia`, `Milano Linate (LIN) Italia`,
+  `Milano Malpensa (MXP) Italia` — `click` the one you want.
+- **Dates:** the date field is oddly named `Cancella data del viaggio selezionata` [TextField]; clicking it
+  opens a calendar with `Solo andata` / `Viaggio di ritorno` and day cells named `20 settembre 2026`
+  [Button] (Italian, no weekday; past days are `(disabled)`).
+- **Search:** `Mostra voli` [Button].
+
+## ITA Airways (ita-airways.com)
+
+Verified 13/09/2026, signed out, in Safari.
+
+- **Cookies:** `Solo necessarie` [Button] (or `Accetta tutto`).
+- **Trip type:** `Tipo di viaggio` [ComboBox] (held `Andata e ritorno`) — `select` it.
+- 🔴 **The airport fields are named just `Da` and `a`.** The single letter `a` matches other things on the
+  page (a click by that name typed into the site's news search — "milano finanza"). **Target them by ref:**
+  `find field` numbers them `@2 Da`, `@3 a`; `click @3`, then `keys "<city>"`. Suggestions come as
+  StaticText like `Milano, Aeroporti MIL`. The `Da` field holds `Roma` and doesn't clear on focus —
+  `hotkey cmd a` before typing if you need to replace it.
+- **Dates:** `Data partenza - ritorno` [TextField]. **Search:** `Cerca` [Button].
+- ITA embeds an **invisible reCAPTCHA** for its form; anybrowser no longer flags it as a wall (only a
+  visible, real-sized CAPTCHA is flagged).
+
 ## Airport codes met
 
 BDS Brindisi · BRI Bari · BGY Milano Bergamo · MXP Milano Malpensa · LIN Milano Linate · MIL all of Milan.

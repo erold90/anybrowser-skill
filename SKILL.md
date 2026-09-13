@@ -243,6 +243,7 @@ Read the one that fits before starting — names, recipes and traps already met:
 - `playbooks/chrome.md` — Chrome and Chromium: profiles, files, settings pages, alerts, bookmarks
 - `playbooks/gmail.md` — compose, search, read, reply, links (web Gmail)
 - `playbooks/booking.md` — Booking.com: search, cookie reject, the destination trap, dates, reading results
+- `playbooks/airbnb.md` — Airbnb: search, cookie panel, the keys-not-fill field, day-cell names, prices in the tree
 
 ## Native apps
 

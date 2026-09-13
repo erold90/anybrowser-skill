@@ -919,9 +919,11 @@ func pageGate(_ web: AXUIElement, title: String) -> String? {
     }
     for frameElement in webSearch(web, "AXFrameSearchKey", limit: 12) {
         let label = (frameElement.text(kAXTitleAttribute) + " " + frameElement.text(kAXDescriptionAttribute)).lowercased()
-        if ["recaptcha", "hcaptcha", "turnstile", "security challenge", "sfida di sicurezza", "captcha"].contains(where: { label.contains($0) }) {
-            return "a CAPTCHA is on the page: only the user answers it — ask them, then waitfor what comes after"
-        }
+        guard ["recaptcha", "hcaptcha", "turnstile", "security challenge", "sfida di sicurezza", "captcha"].contains(where: { label.contains($0) }) else { continue }
+        // Only a CAPTCHA the user must actually solve. An invisible reCAPTCHA (v3, or the badge) that
+        // many sites embed just to score the form is tiny or off-screen — not a wall (ITA Airways, 13/9).
+        guard let f = frame(frameElement), f.width >= 120, f.height >= 90, onScreen(CGPoint(x: f.midX, y: f.midY)) else { continue }
+        return "a CAPTCHA is on the page: only the user answers it — ask them, then waitfor what comes after"
     }
     if text.contains("non sono un robot") || text.contains("i'm not a robot") {
         return "a CAPTCHA is on the page: only the user answers it — ask them, then waitfor what comes after"
