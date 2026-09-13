@@ -9,9 +9,9 @@ Measured on 12/09/2026 on this Mac (MacBook Pro 2018, Chromium 146), browser sta
 
 | Audit | Time |
 |---|---|
-| danielelore.com, one page | 2.5 s |
-| codename.cc, `--crawl 5` (2 pages found) and `--links` | 6.0 s |
-| danielelore.com, `--mobile --slow` | 3.4 s |
+| a small static site, one page | 2.5 s |
+| the same, `--crawl 5` (2 pages found) and `--links` | 6.0 s |
+| the same, `--mobile --slow` | 3.4 s |
 
 ## The options that go deeper
 
@@ -82,11 +82,11 @@ hardening (headers, cookies). Quote the finding lines as they are; they're alrea
 | `tells the world server: nginx/1.18.0` | a version helps attackers pick exploits | `server_tokens off` (nginx), hide `x-powered-by` |
 | `cookies … readable by scripts` | a session cookie without HttpOnly | set HttpOnly (and Secure, SameSite) where the server sets it |
 
-## Fixing a site, verified on danielelore.com, codename.cc and salentofood.pages.dev (12/09/2026)
+## Fixing a site, verified on three real Cloudflare Pages sites (12/09/2026)
 
 1. **Keep a copy first.** None of the three sites was a git repository.
-2. **Compare the live page with the local source before editing** (`curl` against the file). On
-   danielelore.com the only difference was Cloudflare's email obfuscation, which rewrites
+2. **Compare the live page with the local source before editing** (`curl` against the file). On one
+   site the only difference was Cloudflare's email obfuscation, which rewrites
    `mailto:` links on the fly.
 3. **Serve the fix locally the way the host does.** `wrangler pages dev <dir> --port N` applies
    `_headers` and `404.html`, and runs the Functions. Audit it there.
@@ -103,7 +103,7 @@ hardening (headers, cookies). Quote the finding lines as they are; they're alrea
 Traps met along the way:
 
 - **`wrangler pages deploy <dir>` publishes every file in the folder.** Design notes and a zip sat
-  next to codename.cc's pages. Deploy from a copy that holds only the site's files.
+  next to one site's pages. Deploy from a copy that holds only the site's files.
 - **In `_headers`, `/` matches only the home page.** Headers for every address go under `/*`. The
   same header under both is sent twice.
 - **Low contrast:**
@@ -112,7 +112,7 @@ Traps met along the way:
   - Keep a separate, darker token for coloured *text* than for filled buttons.
 - **CLS from web fonts:** a fallback `@font-face` with `size-adjust`, `ascent-override` and
   `descent-override` measured from the font files. Measure with fontTools, weighting average glyph
-  width by letter frequency. It took codename.cc from 0.16 to 0.
+  width by letter frequency. It took one site's CLS from 0.16 to 0.
 - **CLS from content drawn by script:** reserve the space the text will take (`min-height`), and
   keep an empty footer hidden until it's filled (`:empty { display: none }`).
 
