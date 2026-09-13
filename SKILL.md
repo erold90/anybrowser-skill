@@ -242,6 +242,7 @@ Read the one that fits before starting — names, recipes and traps already met:
 - `playbooks/safari.md` — toolbar ids, menus, settings panes, history and bookmarks without Full Disk Access
 - `playbooks/chrome.md` — Chrome and Chromium: profiles, files, settings pages, alerts, bookmarks
 - `playbooks/gmail.md` — compose, search, read, reply, links (web Gmail)
+- `playbooks/booking.md` — Booking.com: search, cookie reject, the destination trap, dates, reading results
 
 ## Native apps
 
