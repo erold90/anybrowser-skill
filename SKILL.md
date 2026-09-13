@@ -244,6 +244,9 @@ Read the one that fits before starting — names, recipes and traps already met:
 - `playbooks/gmail.md` — compose, search, read, reply, links (web Gmail)
 - `playbooks/booking.md` — Booking.com: search, cookie reject, the destination trap, dates, reading results
 - `playbooks/airbnb.md` — Airbnb: search, cookie panel, the keys-not-fill field, day-cell names, prices in the tree
+- `playbooks/subito.md` — Subito.it: search by URL, prices in the tree (the `/affari` market work)
+- `playbooks/search-console.md` — Google Search Console: jump to any report by URL, read Performance metrics
+- `playbooks/cloudflare.md` — Cloudflare dashboard: the user's login, DNS records by URL, what never to touch
 
 ## Native apps
 
