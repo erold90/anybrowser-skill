@@ -26,6 +26,7 @@ binary, ~30 s). Before the first task: `scripts/anybrowser.sh check`.
 | Read what's visible, with field values | `read` (`--all`: off-screen too, up to 400 lines — for long pages use `text`) | |
 | Links and where they go | `links` · `links invoice` — matches text or address, any case (`--url`: address only); identical links listed once, marked `(×3)`; the last line counts them, `--count` prints only that | |
 | Find an element | `find button Send` · `find field` · `find heading` · `where Send` · `--count` for a number only · `find row --count` counts a table's or a mail list's rows without reading them | 5–150 ms |
+| How long is a list? | `text` shows what's loaded but never marks where a list ends — don't assume a short list is the whole list. Confirm the length with `find button "Delete" --count` (or `find row --count`) before saying "there are only N" | |
 | A table | `find table` (each with its size and first cells) · `table 2` (a long cell ends in `…`) | |
 | Act | `click Send` · `fill Email "a@b.c"` · `select Plan Pro` · `click @3` | 0.2–0.6 s |
 | Wait / check | `waitfor "Order placed" 15` · `waitgone Loading` · `expect "Saved"` · `waitload` | |
