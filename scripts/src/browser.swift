@@ -463,11 +463,161 @@ func joinPriceFragments(_ lines: [String]) -> [String] {
     return out
 }
 
+/// A piece of the page's text and where the screen shows it.
+struct Leaf {
+    let text: String
+    let rect: CGRect          // .null when the browser gives no usable place
+    let control: Bool         // a button or link read by its title, which WebKit's text may hold as an object mark
+}
+
+/// The page's text pieces in document order, with their frames: static texts, and buttons and
+/// links with nothing inside. Stops past `chars` characters or `budget` seconds, so a long
+/// page costs no more than the part `text` shows.
+func textLeaves(_ web: AXUIElement, from start: AXUIElement? = nil, chars: Int, budget: Double) -> [Leaf] {
+    let deadline = now() + budget
+    let page = frame(web)
+    let names = [kAXRoleAttribute, kAXValueAttribute, kAXTitleAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXChildrenAttribute] as CFArray
+    let titled: Set<String> = ["AXButton", "AXPopUpButton", "AXMenuButton", "AXDisclosureTriangle", "AXLink"]
+    var leaves: [Leaf] = []
+    var total = 0
+    // Texts and buttons only: groups, cells and rows would cost time and hold no words.
+    var elements = webSearch(web, ["AXStaticTextSearchKey", "AXButtonSearchKey"], from: start, limit: 5000)
+    if elements.isEmpty { elements = webSearch(web, "AXAnyTypeSearchKey", from: start, limit: 5000) }
+    for e in elements {
+        if total > chars || now() > deadline { break }
+        AXUIElementSetMessagingTimeout(e, 0.5)
+        var raw: CFArray?
+        guard AXUIElementCopyMultipleAttributeValues(e, names, AXCopyMultipleAttributeOptions(rawValue: 0), &raw) == .success,
+              let v = raw as [AnyObject]?, v.count == 6, let role = v[0] as? String else { continue }
+        let text: String
+        if role == "AXStaticText" { text = (v[1] as? String) ?? "" }
+        else if titled.contains(role), ((v[5] as? [AXUIElement]) ?? []).isEmpty { text = (v[2] as? String) ?? "" }
+        else { continue }
+        guard !flat(text).isEmpty else { continue }
+        var rect = CGRect.null
+        if let o = axPoint(v[3]), let s = axSize(v[4]), s.width >= 2, s.height >= 4 {
+            let r = CGRect(origin: o, size: s)
+            // Chromium squeezes what's off screen into a sliver at the window's edge; hidden text sits far to the left.
+            if page.map({ r.maxX > $0.minX && r.minX < $0.maxX }) ?? true { rect = r }
+        }
+        leaves.append(Leaf(text: text, rect: rect, control: role != "AXStaticText"))
+        total += text.count + 1
+    }
+    debug("text: \(leaves.count) of \(elements.count) pieces placed")
+    return leaves
+}
+
+/// Do two pieces sit on one line of the screen? Their middles nearly level, and neither is text
+/// wrapping onto more lines — such a run's frame starts at the left edge, not where the run
+/// begins, and would pass for a piece out of order. A button may stand taller: padding, not lines.
+func sameRow(_ a: Leaf, _ b: Leaf) -> Bool {
+    let (small, tall) = a.rect.height <= b.rect.height ? (a, b) : (b, a)
+    guard tall.rect.height < small.rect.height * (tall.control ? 3 : 1.6) else { return false }
+    return abs(a.rect.midY - b.rect.midY) < 0.4 * small.rect.height
+}
+
+/// Mostly Arabic or Hebrew letters: a row read from right to left.
+func readsRightToLeft(_ s: String) -> Bool {
+    var rtl = 0, ltr = 0
+    for u in s.unicodeScalars where u.properties.isAlphabetic {
+        switch u.value {
+        case 0x0590...0x08FF, 0xFB1D...0xFDFF, 0xFE70...0xFEFF: rtl += 1
+        default: ltr += 1
+        }
+    }
+    return rtl > ltr
+}
+
+/// A line of the screen whose pieces the page writes in another order: GitHub puts a token's
+/// Delete button and its "Last used…" (both floated right) before the token's name.
+struct ReorderedRow {
+    let pieces: [Leaf]        // in page order
+    let line: String          // as the eye reads it: touching pieces joined as words, pieces apart by " · "
+}
+
+func reorderedRows(_ leaves: [Leaf]) -> [ReorderedRow] {
+    var rows: [ReorderedRow] = []
+    var row: [Leaf] = []
+    func close() {
+        defer { row = [] }
+        guard row.count > 1 else { return }
+        let rtl = readsRightToLeft(row.map(\.text).joined(separator: " "))
+        let order = row.indices.sorted { i, j in
+            let (a, b) = (row[i].rect.minX.rounded(), row[j].rect.minX.rounded())
+            return a != b ? (rtl ? a > b : a < b) : i < j
+        }
+        guard order != Array(row.indices) else { return }          // already in screen order: left as it is
+        var line = ""
+        var prev: Leaf? = nil
+        for leaf in order.map({ row[$0] }) {
+            if let p = prev {
+                let gap = rtl ? p.rect.minX - leaf.rect.maxX : leaf.rect.minX - p.rect.maxX
+                if gap > max(8, 0.8 * min(p.rect.height, leaf.rect.height)) { line += " · " }
+                else if gap > 1.5 || p.text.last?.isWhitespace == true || leaf.text.first?.isWhitespace == true { line += " " }
+            }
+            line += flat(leaf.text)
+            prev = leaf
+        }
+        rows.append(ReorderedRow(pieces: row, line: line))
+    }
+    for leaf in leaves {
+        if leaf.rect.isNull { close(); continue }
+        if row.contains(where: { sameRow($0, leaf) }) { row.append(leaf) } else { close(); row = [leaf] }
+    }
+    close()
+    return rows
+}
+
+/// The text with each reordered row written once, in screen order, where the page had it.
+/// A row is rewritten only where its pieces stand in the text in page order with nothing but
+/// spaces, line breaks and object marks between them: no text is ever dropped.
+func inScreenOrder(_ raw: String, _ rows: [ReorderedRow]) -> String {
+    guard !rows.isEmpty else { return raw }
+    func wordChar(_ c: Character) -> Bool { c.isLetter || c.isNumber }
+    var out = ""
+    var cursor = raw.startIndex
+    for row in rows {
+        let pieces = row.pieces.map { (words: $0.text.split(whereSeparator: \.isWhitespace).map(String.init), control: $0.control) }
+        guard let first = pieces.first?.words.first else { continue }
+        var span: Range<String.Index>? = nil
+        var from = cursor
+        var tries = 0
+        search: while span == nil, tries < 40, let hit = raw.range(of: first, range: from..<raw.endIndex) {
+            tries += 1
+            from = hit.upperBound
+            if hit.lowerBound > raw.startIndex, wordChar(raw[raw.index(before: hit.lowerBound)]) { continue }
+            var at = hit.lowerBound
+            for piece in pieces {
+                var mark = false
+                for (k, word) in piece.words.enumerated() {
+                    while at < raw.endIndex, raw[at].isWhitespace || raw[at] == "\u{FFFC}" {
+                        if raw[at] == "\u{FFFC}" { mark = true }
+                        at = raw.index(after: at)
+                    }
+                    if raw[at...].hasPrefix(word) { at = raw.index(at, offsetBy: word.count); continue }
+                    if piece.control && k == 0 && mark { break }       // WebKit kept the button as an object mark
+                    continue search
+                }
+            }
+            if at < raw.endIndex, wordChar(raw[at]) { continue }
+            span = hit.lowerBound..<at
+        }
+        guard let s = span else { continue }
+        out += raw[cursor..<s.lowerBound]
+        if let last = out.last, last != "\n" { out += "\n" }
+        out += row.line
+        if s.upperBound < raw.endIndex, raw[s.upperBound] != "\n" { out += "\n" }
+        cursor = s.upperBound
+    }
+    return out + raw[cursor...]
+}
+
 /// The browser's own element search, by kind and text: AXLinkSearchKey,
 /// AXButtonSearchKey, AXTextFieldSearchKey, AXHeadingSearchKey, AXAnyTypeSearchKey…
-func webSearch(_ web: AXUIElement, _ key: String, text: String? = nil, limit: Int = 500) -> [AXUIElement] {
+func webSearch(_ web: AXUIElement, _ key: Any, text: String? = nil, from start: AXUIElement? = nil, limit: Int = 500) -> [AXUIElement] {
     var predicate: [String: Any] = ["AXSearchKey": key, "AXResultsLimit": limit, "AXDirection": "AXDirectionNext", "AXVisibleOnly": false]
     if let t = text, !t.isEmpty { predicate["AXSearchText"] = t }
+    if let s = start { predicate["AXStartElement"] = s }
     AXUIElementSetMessagingTimeout(web, 2)
     var out: CFTypeRef?
     guard AXUIElementCopyParameterizedAttributeValue(web, "AXUIElementsForSearchPredicate" as CFString,

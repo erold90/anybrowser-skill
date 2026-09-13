@@ -22,7 +22,7 @@ binary, ~30 s). Before the first task: `scripts/anybrowser.sh check`.
 | What's open | `tabs` — every tab of every browser, with addresses; `*` marks the tab showing in each window, `(opened by anybrowser)` the windows you opened | 0.3 s |
 | Switch / close | `tab 3` · `tab gmail` (title or address) · `tab close` · `tab close invoice` (refuses when several tabs match equally) · `tab close --mine` (every window you opened) | 0.2 s |
 | Back, forward, reload | `back` · `forward` · `reload` — each waits for the page | 0.1–0.3 s |
-| Read a page | `text` — the whole page in one call, line by line; `text --main` — just the article, without menus and sidebars; `--max N` characters (default 12000) | 20–150 ms |
+| Read a page | `text` — the whole page in one call, line by line; `text --main` — just the article, without menus and sidebars; `--max N` characters (default 12000). A row the page writes out of order (a date or a Delete button floated right, before the name) reads as the screen shows it, on one line: `chiaro — gist · Last used 3 days ago · Delete` (in Chromium, the rows on screen) | 20–200 ms |
 | Read what's visible, with field values | `read` (`--all`: off-screen too, up to 400 lines — for long pages use `text`) | |
 | Links and where they go | `links` · `links invoice` — matches text or address, any case (`--url`: address only); identical links listed once, marked `(×3)`; the last line counts them, `--count` prints only that | |
 | Find an element | `find button Send` · `find field` · `find heading` · `where Send` · `--count` for a number only · `find row --count` counts a table's or a mail list's rows without reading them | 5–150 ms |

@@ -879,6 +879,10 @@ func perform(_ args: [String]) throws -> String {
         if isChromiumWeb(web), let lines = pageLines(web, limit: max + 2000, within: scope) {
             raw = lines
         }
+        // A row the page writes in another order than it shows (a float-right date or button before a name) reads as shown.
+        let rows = reorderedRows(textLeaves(web, from: scope, chars: max + 2000, budget: 0.06))
+        raw = inScreenOrder(raw, rows)
+        debug("text: \(rows.count) rows put in screen order")
         let text = tidyText(raw)
         let head = "\"\(String(flat(pageTitle(web, win)).prefix(100)))\" — \(axURL(web))\n\n"
         if text.count <= max { return head + text }

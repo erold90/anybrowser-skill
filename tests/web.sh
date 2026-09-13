@@ -102,6 +102,10 @@ commands() {
   t "$browser: forward returns"             "forward to \"anybrowser test\" — $(re "$URL2")" "$out"
   t "$browser: reload reloads"              "reloaded \"anybrowser test\"" "$out"
   t "$browser: text has the page, line by line" "^    Name$" "$out"
+  t "$browser: a row written out of order reads as shown" "^    chiaro — gist · Last used within the last 7 months · Delete$" "$out"
+  t "$browser: ... while prose wrapping around links keeps its order" "The Salento \(also penisola salentina\) is a historical and cultural region of Apulia, the heel" "$out"
+  # Chromium gives no real place to what's off screen, so there only the rows on screen are put in order.
+  [ "$browser" = Safari ] && t "Safari: ... below the fold too" "^    later — repo · Never used · Revoke$" "$out"
   t "$browser: refs click the listed element" "clicked Send  \[Button\]" "$out"
   t "$browser: expect passes, saying where" "ok: \"status: sent\" is on the page in $browser" "$out"
   t "$browser: tabs lists the page"         "anybrowser test — $(re "$URL2")" "$out"

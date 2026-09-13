@@ -2,6 +2,10 @@
 <style>body{font:16px -apple-system;margin:40px;max-width:640px} label,input,button{display:block;margin:8px 0} input{font-size:16px;padding:6px;width:320px} button{font-size:16px;padding:6px 14px}</style></head>
 <body>
 <h1>anybrowser test page</h1>
+<!-- A list row written in another order than it shows, as GitHub's tokens: button and date floated right, before the name. -->
+<!-- Prose that wraps around links: its pieces go left again at each new line, and must stay in order. -->
+<p id="prose">The <a href="#s">Salento</a> (also <a href="#p">penisola salentina</a>) is a historical and cultural region of <a href="#a">Apulia</a>, the heel of the Italian boot and the easternmost area of <a href="#i">Italy</a>, between two seas.</p>
+<div class="token"><div style="float:right"><details><summary>Delete</summary><p>Sure?</p></details></div><small style="float:right;margin:2px 16px">Last used within the last 7 months</small><span><strong><a href="#chiaro">chiaro</a></strong> <em>— gist</em></span><div>This token has no expiration date.</div></div>
 <label for="name">Name</label><input id="name">
 <input id="email" placeholder="Email" aria-label="Email">
 <p id="inputs">real inputs: 0 · synthetic: 0</p>
@@ -20,6 +24,7 @@
 <p id="time">last mousedown: 0</p>
 <p id="status">status: ready</p>
 <div style="height:1600px"></div>
+<div class="token"><div style="float:right"><details><summary>Revoke</summary></details></div><small style="float:right;margin:2px 16px">Never used</small><span><strong><a href="#later">later</a></strong> <em>— repo</em></span></div>
 <button id="far">Far button</button>
 <script>
 // The page keeps its own record: whether events came from the OS (isTrusted)
