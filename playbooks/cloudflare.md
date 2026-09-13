@@ -14,7 +14,7 @@ managed from the dashboard by hand. That is the main reason to drive Cloudflare 
 anybrowser.sh do 'go dash.cloudflare.com' 'waitfor "Sign in" 8'
 ```
 
-Verified: `dash.cloudflare.com/` redirects to `/login`, the email `erold90@gmail.com` prefilled
+Verified: `dash.cloudflare.com/` redirects to `/login`, the account's email prefilled
 (`Last used`). **The user types the password and passes 2FA** — never a password from anybrowser.
 After they're in, tell them to say so, then continue.
 

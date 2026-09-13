@@ -1,6 +1,6 @@
 # Google Search Console (web, in Safari or Chrome)
 
-Verified on 13/09/2026 in Safari, signed into the user's Google account (`erold90@gmail.com`).
+Verified on 13/09/2026 in Safari, signed into the user's Google account.
 Read-only: the reports are analytics, safe to read; never change a property's settings without asking.
 
 If the browser isn't signed into Google, Search Console shows the Google sign-in — **that's the user's**
@@ -21,7 +21,7 @@ Every page takes `?resource_id=sc-domain:<domain>` (a domain property) or `?reso
 | Links / Report Link | `search.google.com/search-console/links` |
 | Settings / Impostazioni | `search.google.com/search-console/settings` |
 
-Example: `go "search.google.com/search-console/performance/search-analytics?resource_id=sc-domain:danielelore.com"`.
+Example: `go "search.google.com/search-console/performance/search-analytics?resource_id=sc-domain:example.com"`.
 
 Switch property from the UI with the `Cerca proprietà` [PopUpButton] (top left), or just change the
 `resource_id` in the URL.
