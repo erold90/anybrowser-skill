@@ -1,0 +1,39 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>anybrowser — command</title>
+<style>
+  :root{ --bg:#0b0f14; --card:#121821; --line:#243040; --ink:#e8edf3; --dim:#8fa3b8;
+         --accent:#3ddc97; --blue:#4ea1ff; --amber:#e6b34a;
+         --mono:"SF Mono",ui-monospace,Menlo,monospace; }
+  *{box-sizing:border-box} html,body{height:100%}
+  body{margin:0;background:radial-gradient(120% 90% at 80% -10%,#152233 0%,var(--bg) 55%);
+       color:var(--ink);display:grid;place-items:center;padding:28px;font-family:var(--mono)}
+  .wrap{width:min(680px,94vw)}
+  .kick{font:600 13px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--dim);
+        display:flex;align-items:center;gap:10px;margin:0 4px 16px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--accent)}
+  .term{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+        box-shadow:0 30px 80px -40px #000}
+  .bar{display:flex;gap:8px;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line)}
+  .b{width:12px;height:12px;border-radius:50%} .r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+  .bar span{margin-left:10px;color:var(--dim);font-size:13px}
+  pre{margin:0;padding:22px 22px 26px;font-size:16.5px;line-height:1.7;white-space:pre;overflow:auto}
+  .p{color:var(--accent)} .cmd{color:var(--ink)} .sub{color:var(--blue)} .str{color:var(--amber)} .c{color:var(--dim)}
+  .cap{margin:22px 6px 0;color:var(--dim);font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif}
+  .cap b{color:var(--ink)}
+</style></head>
+<body>
+  <div class="wrap">
+    <div class="kick"><span class="dot"></span> anybrowser</div>
+    <div class="term">
+      <div class="bar"><i class="b r"></i><i class="b y"></i><i class="b g"></i><span>zsh — anybrowser</span></div>
+<pre><span class="p">$</span> <span class="cmd">anybrowser do</span> <span class="c">\</span>
+    <span class="str">'go book-a-demo'</span> <span class="c">\</span>
+    <span class="str">'fill Name "Ada Lovelace"'</span> <span class="c">\</span>
+    <span class="str">'fill Email "ada@lovelace.dev"'</span> <span class="c">\</span>
+    <span class="str">'select Plan Pro'</span> <span class="c">\</span>
+    <span class="str">'click "Send request"'</span></pre>
+    </div>
+    <p class="cap">One call fills and submits the form — with <b>real, trusted</b> input.</p>
+  </div>
+</body></html>

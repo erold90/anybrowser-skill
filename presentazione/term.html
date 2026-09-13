@@ -1,0 +1,107 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>anybrowser — terminal</title>
+<style>
+  :root{ --bg:#0b0f14; --card:#121821; --line:#243040; --ink:#e8edf3; --dim:#8fa3b8;
+         --accent:#3ddc97; --blue:#4ea1ff; --amber:#e6b34a; --red:#ff6b6b;
+         --mono:"SF Mono",ui-monospace,Menlo,monospace; }
+  *{box-sizing:border-box} html,body{height:100%}
+  body{margin:0;background:radial-gradient(120% 90% at 80% -10%,#152233 0%,var(--bg) 55%);
+       color:var(--ink);display:grid;place-items:center;padding:26px;font-family:var(--mono)}
+  .wrap{width:min(760px,95vw)}
+  .kick{font:600 13px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--dim);
+        display:flex;align-items:center;gap:10px;margin:0 4px 14px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--accent)}
+  .term{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+        box-shadow:0 30px 80px -40px #000}
+  .bar{display:flex;gap:8px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--line)}
+  .b{width:12px;height:12px;border-radius:50%} .r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+  .bar span{margin-left:10px;color:var(--dim);font-size:13px}
+  pre{margin:0;padding:20px 22px 24px;font-size:15.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word;min-height:360px}
+  .p{color:var(--accent)} .cmd{color:var(--ink)} .str{color:var(--amber)} .c{color:var(--dim)}
+  .ok{color:var(--accent)} .warn{color:var(--amber)} .err{color:var(--red)} .info{color:var(--blue)} .dimc{color:var(--dim)}
+  .cur{display:inline-block;width:9px;height:17px;background:var(--accent);vertical-align:-3px;margin-left:2px;animation:bl 1s steps(1) infinite}
+  @keyframes bl{50%{opacity:0}}
+  .cap{margin:18px 6px 0;color:var(--dim);font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif}
+  .cap b{color:var(--ink)}
+</style></head>
+<body>
+  <div class="wrap">
+    <div class="kick"><span class="dot"></span> anybrowser</div>
+    <div class="term"><div class="bar"><i class="b r"></i><i class="b y"></i><i class="b g"></i><span>zsh — anybrowser</span></div>
+    <pre id="scr"></pre></div>
+    <p class="cap" id="cap"></p>
+  </div>
+<script>
+const CLIPS = {
+  audit: {
+    cmd: "anybrowser audit https://danielelore.com --a11y",
+    cap: "DevTools data from a headless Chrome — errors, speed, SEO, accessibility, security.",
+    out: [
+      ['dimc','audit https://danielelore.com → 200 · page 2.0 s (Chromium headless)'],
+      ['err', 'errors   3'],
+      ['warn','warnings 1'],
+      ['info','a11y     1 (axe-core): meta-viewport — zoom disabled'],
+      ['dimc','page     title 32 chars · description 161 · lang it · canonical ok · h1 ok'],
+      ['ok',  'speed    TTFB 176 ms · FCP 424 ms · LCP 424 ms · CLS 0.00 · load 490 ms'],
+      ['warn','security https TLS 1.3, cert 80 days · missing: HSTS, CSP, X-Frame-Options'],
+      ['dimc','search   robots.txt ok · sitemap lists 1 address'],
+    ]
+  },
+  flight: {
+    cmd: "anybrowser text   # Ryanair fares, BDS → Milano",
+    cap: "The exact fare with a checked bag — read straight from the page.",
+    out: [
+      ['dimc','FR 3449   17:55 → 19:35   Brindisi → Milano Bergamo   1 h 40 m'],
+      ['ok',  'Basic       hand bag under the seat            € 19,99'],
+      ['info','Regular     seat + 10 kg cabin bag            + € 29,44'],
+      ['info','Plus        seat + 20 kg CHECKED bag          + € 38,24'],
+      ['dimc','Flexi Plus  free changes                      + € 98,44'],
+      ['dimc',''],
+      ['ok',  '→ with a 20 kg checked bag: € 58,23 total'],
+    ]
+  },
+  action: {
+    cmd: "anybrowser click Send",
+    cap: "Every action waits for the app and reports what changed — no screenshot needed.",
+    out: [
+      ['ok', 'clicked Send  [Button] at 97 614'],
+      ['dimc','  → page: "status: sent name=Ada email=ada@example.com plan=Pro"'],
+      ['dimc','  → page: "real clicks: 5 · synthetic: 0"'],
+      ['dimc',''],
+      ['dimc','the report IS the confirmation.'],
+    ]
+  },
+  safety: {
+    cmd: "anybrowser go google.com/recaptcha/api2/demo",
+    cap: "Walls only a person passes are flagged, not fought. CAPTCHAs are never solved.",
+    out: [
+      ['dimc','loaded "reCAPTCHA demo" — https://www.google.com/recaptcha/…'],
+      ['warn','  ⚠ a CAPTCHA is on the page: only the user answers it —'],
+      ['warn','    ask them, then waitfor what comes after'],
+      ['dimc',''],
+      ['dimc','$ anybrowser click Send        # while you type in the terminal'],
+      ['err', '  Ghostty is in front — the app this command runs in —'],
+      ['err', '  so nothing was done there.'],
+    ]
+  },
+};
+const clip = CLIPS[new URLSearchParams(location.search).get('clip')] || CLIPS.audit;
+const scr = document.getElementById('scr');
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+function typeCmd(done){
+  scr.innerHTML = '<span class="p">$</span> <span class="cmd" id="t"></span><span class="cur" id="cur"></span>';
+  const t = document.getElementById('t'); let i=0;
+  (function step(){ if(i<=clip.cmd.length){ t.textContent = clip.cmd.slice(0,i); i++; setTimeout(step, 34);} else { setTimeout(done, 480);} })();
+}
+function printOut(){
+  document.getElementById('cur')?.remove();
+  let html = '<span class="p">$</span> <span class="cmd">'+esc(clip.cmd)+'</span>\n\n';
+  let i=0;
+  (function line(){ if(i<clip.out.length){ const [cls,txt]=clip.out[i];
+      html += '<span class="'+cls+'">'+esc(txt)+'</span>\n'; scr.innerHTML=html; i++; setTimeout(line, 300);
+    } else { document.getElementById('cap').innerHTML = clip.cap.replace(/real|trusted|exact|never|flagged/gi, m=>'<b>'+m+'</b>'); } })();
+}
+setTimeout(()=>typeCmd(printOut), 500);
+</script>
+</body></html>
