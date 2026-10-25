@@ -202,7 +202,7 @@ let chromium = ["com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac
 // One round trip per element instead of one per attribute.
 let wanted = [kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute,
               kAXPlaceholderValueAttribute, kAXPositionAttribute, kAXSizeAttribute,
-              kAXEnabledAttribute, kAXChildrenAttribute] as CFArray
+              kAXEnabledAttribute, kAXChildrenAttribute, kAXHelpAttribute] as CFArray
 
 func walk(_ root: AXUIElement, maxDepth: Int = 40, maxNodes: Int = 8000,
           stop: ((Node) -> Bool)? = nil, clip: CGRect? = nil, inWeb startInWeb: Bool = false) -> (nodes: [Node], sawWeb: Bool) {
@@ -232,6 +232,9 @@ func walk(_ root: AXUIElement, maxDepth: Int = 40, maxNodes: Int = 8000,
         if name.isEmpty { name = str(value(values, 2)) }
         if name.isEmpty, inputRoles.contains(role) { name = str(value(values, 4)) }
         if name.isEmpty { name = str(value(values, 3)) }
+        // An icon button often carries nothing but its tooltip: without this it reads
+        // as a nameless [Button] and can only be clicked by guessing coordinates.
+        if name.isEmpty { name = str(value(values, 9)) }
         let origin = axPoint(value(values, 5)), size = axSize(value(values, 6))
         // Reading only what's visible: a subtree whose frame misses the window is skipped whole.
         if let clip = clip, let o = origin, let sz = size, sz.width > 0, sz.height > 0,
@@ -315,9 +318,14 @@ func score(_ name: String, _ needle: String) -> Int? {
 }
 
 func rank(_ nodes: [Node], _ needle: String) -> [Node] {
-    nodes.enumerated().compactMap { (i, node) -> (Int, Int, Node)? in
+    let scored = nodes.enumerated().compactMap { (i, node) -> (Int, Int, Node)? in
         score(node.name, needle).map { ($0, i, node) }
-    }.sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }.map { $0.2 }
+    }
+    // When the page itself offers a match, the browser's own toolbar never wins:
+    // "fill Ricerca" belongs to the page's search box, not to the address bar.
+    let pageHasOne = scored.contains { $0.2.inWeb }
+    return scored.map { (s, i, n) in (pageHasOne && !n.inWeb ? s + 10 : s, i, n) }
+        .sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }.map { $0.2 }
 }
 
 func flat(_ s: String) -> String {
