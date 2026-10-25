@@ -14,7 +14,7 @@ if [ ! -x "$BIN" ] || [ -n "$(find "$SRC" -name '*.swift' -newer "$BIN" 2>/dev/n
     echo "anybrowser needs the Swift compiler, part of the Command Line Tools: xcode-select --install" >&2
     exit 1
   fi
-  echo "building anybrowser (once, ~30 s)…" >&2
+  echo "building anybrowser (once: ~30 s, up to 2–3 min on an Intel Mac — it is not stuck)…" >&2
   if ! swiftc -O "$SRC"/*.swift -o "$BIN.$$" 2>"$BIN.$$.log"; then
     grep -v "warning:" "$BIN.$$.log" >&2 || true
     rm -f "$BIN.$$" "$BIN.$$.log"
