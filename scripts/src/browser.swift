@@ -858,20 +858,49 @@ func tabList(_ browser: NSRunningApplication) throws -> [TabInfo] {
     return out
 }
 
-/// Windows anybrowser opened (tab new --window, private), so a listing can say
-/// which are the agent's own and which are the user's.
+/// Windows anybrowser opened (tab new --window, private), each as `browser#window|session`,
+/// so a listing can say which are the user's, which this session's and which another agent's.
 let openedPath = tempDir + "anybrowser-opened.json"
 
-func openedWindows() -> Set<String> {
+func openedList() -> [String] {
     guard let data = FileManager.default.contents(atPath: openedPath),
           let list = try? JSONDecoder().decode([String].self, from: data) else { return [] }
-    return Set(list)
+    return list
+}
+
+/// `browser#window` → the session that opened it ("" for windows kept before sessions were).
+func openedWindows() -> [String: String] {
+    var out: [String: String] = [:]
+    for entry in openedList() {
+        let parts = entry.split(separator: "|", maxSplits: 1).map(String.init)
+        out[parts[0]] = parts.count > 1 ? parts[1] : ""
+    }
+    return out
+}
+
+func mineWindows() -> Set<String> { Set(openedWindows().filter { $0.value == sessionOwner }.keys) }
+
+func openedNote(_ owner: String?) -> String? {
+    guard let owner else { return nil }
+    if owner.isEmpty { return "opened by anybrowser" }
+    return owner == sessionOwner ? "opened by anybrowser in this session" : "opened by anybrowser in another session"
+}
+
+/// The browser's front window was opened by another agent's session: navigating or adding
+/// a tab there would take over its work (it happened: one session's `go` landed in another's window).
+func frontIsAnotherSessions(_ browser: NSRunningApplication) -> Bool {
+    let opened = openedWindows()
+    guard family(browser) != .other, opened.values.contains(where: { !$0.isEmpty && $0 != sessionOwner }),
+          let front = (try? tabList(browser))?.first?.window,
+          let owner = opened["\(browser.bundleIdentifier ?? "")#\(front)"] else { return false }
+    return !owner.isEmpty && owner != sessionOwner
 }
 
 func rememberFrontWindow(_ browser: NSRunningApplication) {
     guard family(browser) != .other, let tabs = try? tabList(browser), let front = tabs.first?.window, !front.isEmpty else { return }
-    var list = Array(openedWindows())
-    list.append("\(browser.bundleIdentifier ?? "")#\(front)")
+    let key = "\(browser.bundleIdentifier ?? "")#\(front)"
+    var list = openedList().filter { $0 != key && !$0.hasPrefix(key + "|") }
+    list.append(key + "|" + sessionOwner)
     if let data = try? JSONEncoder().encode(Array(list.suffix(50))) { FileManager.default.createFile(atPath: openedPath, contents: data) }
 }
 
@@ -890,7 +919,7 @@ func tabsReport(mineOnly: Bool = false) throws -> String {
         var tabs: [TabInfo]
         do { tabs = try tabList(b) } catch let f as Fail { lines.append("\(browserName(b)) — \(f.message)"); continue }
         if mineOnly {
-            let mine = openedWindows()
+            let mine = mineWindows()
             tabs = tabs.filter { mine.contains("\(b.bundleIdentifier ?? "")#\($0.window)") }
             if tabs.isEmpty { continue }
         }
@@ -898,19 +927,19 @@ func tabsReport(mineOnly: Bool = false) throws -> String {
         lines.append("\(browserName(b)) — \(windows) window\(windows == 1 ? "" : "s"), \(tabs.count) tab\(tabs.count == 1 ? "" : "s")")
         let opened = openedWindows()
         var lastWindow = 0
-        let grouped = windows > 1 || tabs.contains { !$0.mode.isEmpty || opened.contains("\(b.bundleIdentifier ?? "")#\($0.window)") }
+        let grouped = windows > 1 || tabs.contains { !$0.mode.isEmpty || opened["\(b.bundleIdentifier ?? "")#\($0.window)"] != nil }
         for t in tabs {
             if t.windowIndex != lastWindow {
                 lastWindow = t.windowIndex
                 var notes: [String] = []
                 if !t.mode.isEmpty { notes.append(t.mode) }
-                if opened.contains("\(b.bundleIdentifier ?? "")#\(t.window)") { notes.append("opened by anybrowser") }
+                if let note = openedNote(opened["\(b.bundleIdentifier ?? "")#\(t.window)"]) { notes.append(note) }
                 if grouped { lines.append("  window \(t.windowIndex)" + (notes.isEmpty ? "" : " (\(notes.joined(separator: ", ")))")) }
             }
             lines.append((grouped ? "    " : "  ") + tabLine(t))
         }
     }
-    if mineOnly && lines.isEmpty { return "no window opened by anybrowser is open" }
+    if mineOnly && lines.isEmpty { return "no window opened by anybrowser in this session is open" }
     return lines.joined(separator: "\n")
 }
 
@@ -1005,6 +1034,9 @@ func navigate(_ op: String, url: String? = nil) throws -> String {
             return loadedReport("opened \(browserName(browser)):", waitLoad(browser, from: nil, seconds: 20, opening: true), started)
                 + gateNote(pid: browser.processIdentifier)
         }
+    }
+    if frontIsAnotherSessions(browser) {
+        throw Fail(message: "the window in front of \(browserName(browser)) was opened by another session — another agent works there; nothing was done. Open your own: tab new <address> --window")
     }
     let mark = pageMark(browser)
     var before: String? = mark.url

@@ -73,7 +73,7 @@ scripts/anybrowser.sh do 'go example.com' 'find button'
 
 ## Use it two ways
 
-**As a skill for coding agents** — drop it in `~/.claude/skills` or `~/.codex/skills` and the agent uses it on its own for any web or native-app task. This is what it's built for.
+**As a skill for coding agents** — drop it in `~/.claude/skills` or `~/.codex/skills` and the agent uses it on its own for any web or native-app task (opencode reads `~/.claude/skills` too). This is what it's built for. Several agents can share one browser: each `tab close --mine` closes only the windows its own session opened.
 
 **As a tiny CLI for your own Mac browser** — every command works from the shell:
 

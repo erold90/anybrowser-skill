@@ -12,13 +12,34 @@ import AppKit
 
 // MARK: - The app this command runs in
 
-func parentPid(_ pid: pid_t) -> pid_t {
+func processInfo(_ pid: pid_t) -> (parent: pid_t, name: String, started: Int)? {
     var info = kinfo_proc()
     var size = MemoryLayout<kinfo_proc>.stride
     var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
-    guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return 0 }
-    return info.kp_eproc.e_ppid
+    guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return nil }
+    let name = withUnsafeBytes(of: info.kp_proc.p_comm) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+    return (info.kp_eproc.e_ppid, name, Int(info.kp_proc.p_un.__p_starttime.tv_sec))
 }
+
+func parentPid(_ pid: pid_t) -> pid_t { processInfo(pid)?.parent ?? 0 }
+
+/// The agent session a command belongs to: the nearest ancestor that isn't a shell —
+/// Claude Code, Codex, opencode, or the terminal when the command is typed by hand.
+/// Several agents share the user's browser, and each must close only its own windows.
+/// Its start time goes with the pid, so a later process reusing the pid isn't taken for it.
+/// ANYBROWSER_SESSION names it outright.
+let sessionOwner: String = {
+    if let s = ProcessInfo.processInfo.environment["ANYBROWSER_SESSION"], !s.isEmpty { return s }
+    let passThrough: Set<String> = ["sh", "bash", "zsh", "dash", "fish", "ksh", "tcsh", "csh", "login", "env",
+                                    "timeout", "gtimeout", "nohup", "time", "xargs", "caffeinate", "script", "sandbox-exec"]
+    var pid = getppid()
+    for _ in 0..<64 where pid > 1 {
+        guard let p = processInfo(pid) else { break }
+        if !passThrough.contains(p.name.hasPrefix("-") ? String(p.name.dropFirst()) : p.name) { return "\(pid).\(p.started)" }
+        pid = p.parent
+    }
+    return "\(getppid())"
+}()
 
 /// The terminal, editor or desktop app the agent runs in: the nearest ancestor
 /// process that is an app with windows. Under tmux or screen the ancestors end at

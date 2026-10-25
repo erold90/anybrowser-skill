@@ -737,7 +737,8 @@ func perform(_ args: [String]) throws -> String {
         }
         if sub == "new" {
             let browser = try targetBrowser()
-            let inWindow = a.contains("--window")
+            let theirs = !a.contains("--window") && frontIsAnotherSessions(browser)
+            let inWindow = a.contains("--window") || theirs
             let url = try a.dropFirst().first(where: { $0 != "--window" }).map(normalizeURL)
             let started = now()
             if family(browser) == .other {
@@ -749,26 +750,31 @@ func perform(_ args: [String]) throws -> String {
                 bringToFront(browser)
             }
             if inWindow { rememberFrontWindow(browser) }
-            guard url != nil else { return "opened a new \(inWindow ? "window" : "tab") in \(browserName(browser))" }
+            let why = theirs ? " (the window in front is another session's, so this one is yours)" : ""
+            guard url != nil else { return "opened a new \(inWindow ? "window" : "tab") in \(browserName(browser))" + why }
             return loadedReport("new \(inWindow ? "window" : "tab") in \(browserName(browser)):", waitLoad(browser, from: nil, seconds: 20, opening: true), started)
-                + gateNote(pid: browser.processIdentifier)
+                + why + gateNote(pid: browser.processIdentifier)
         }
         if sub == "close" {
             let browser = try targetBrowser()
             if a.contains("--mine") {
-                // Every window anybrowser opened, in every running browser, and nothing else.
-                let mine = openedWindows()
-                var closed = 0
+                // Every window this session opened, in every running browser — never another agent's.
+                let opened = openedWindows()
+                var closed = 0, others = 0
                 for b in (chosenBrowser != nil ? [browser] : runningBrowsers()) where family(b) != .other {
                     let tabs = (try? tabList(b)) ?? []
-                    for w in Set(tabs.map { $0.window }) where mine.contains("\(b.bundleIdentifier ?? "")#\(w)") {
+                    for w in Set(tabs.map { $0.window }) {
+                        guard let owner = opened["\(b.bundleIdentifier ?? "")#\(w)"] else { continue }
+                        guard owner == sessionOwner else { others += 1; continue }
                         for t in tabs.filter({ $0.window == w }).sorted(by: { $0.index > $1.index }) {
                             _ = try Scripting.call(b, "close", [t.window, "\(t.index)"])
                         }
                         closed += 1
                     }
                 }
-                return closed == 0 ? "no window opened by anybrowser is open" : "closed \(closed) window\(closed == 1 ? "" : "s") opened by anybrowser"
+                let left = others == 0 ? "" : " · \(others) opened by another session left open"
+                return (closed == 0 ? "no window opened by anybrowser in this session is open"
+                                    : "closed \(closed) window\(closed == 1 ? "" : "s") opened by anybrowser in this session") + left
             }
             let target: TabInfo
             if a.count > 1 {

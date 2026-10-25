@@ -142,7 +142,15 @@ else
   echo "skip  the terminal taking the front: no app found running these tests"
 fi
 out=$("$M" tabs --mine 2>&1)
-t "Safari: tabs --mine shows the test window" "opened by anybrowser" "$out"
+t "Safari: tabs --mine shows the test window" "opened by anybrowser in this session" "$out"
+out=$(ANYBROWSER_SESSION=another-agent "$M" go "$URL2" 2>&1)
+t "Safari: another session can't navigate the test window" "opened by another session .*nothing was done" "$out"
+out=$(ANYBROWSER_SESSION=another-agent "$M" tab new "$URL2" 2>&1)
+t "Safari: ... its new tab gets a window of its own" "new window in Safari.*another session's" "$out"
+out=$(ANYBROWSER_SESSION=another-agent "$M" tab close --mine 2>&1)
+t "Safari: ... which it closes, leaving the test window" "closed 1 window opened by anybrowser in this session · 1 opened by another session left open" "$out"
+out=$(ANYBROWSER_SESSION=another-agent "$M" tab close --mine 2>&1)
+t "Safari: another session's tab close --mine leaves it open" "no window opened by anybrowser in this session is open · 1 opened by another session left open" "$out"
 out=$("$M" tab close --mine 2>&1)
 t "Safari: tab close --mine closes the test window" "closed 1 window opened by anybrowser" "$out"
 unset ANYBROWSER_BROWSER
